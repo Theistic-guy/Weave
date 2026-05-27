@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-GraphCanvas — Node-based graph editor (v3)
-Changes vs v2:
-  NEW  – Dynamic Node Types & Edge Types (Add/Delete/Color).
-  NEW  – Type Deletion safeguards (prevents deleting types in use).
-  NEW  – Universal & Type-Specific Property Schema system.
-  NEW  – Safe property deletion (preserves non-empty data gracefully).
-  NEW  – Tabbed Settings Dialog.
-  NEW  – Global configurations save directly into the graph JSON.
-  FIX  – Sidebar distinguishes between Schema Props (clearable) vs Custom Props (deletable).
+GraphCanvas — Node-based graph editor (v4)
+Changes vs v3:
+  NEW  – Edge Type Color Schemas (Settings tab fully supports Edge Colors).
+  NEW  – Individual Edge Color overrides via Context Menu & Sidebar.
+  FIX  – Click on Edge/Node text labels to select the underlying item.
+  FIX  – Canvas label size correctly propagates geometry updates instantly.
 """
 
 import sys, json, math, uuid, copy
@@ -58,7 +55,13 @@ NODE_TYPE_COLORS = {
 }
 
 EDGE_DIRECTIONS = ["→", "←", "↔", "—"]
-EDGE_TYPES      = ["relationship", "dependency", "flow", "note"]
+
+EDGE_TYPE_COLORS = {
+    "relationship": "#adb5bd",
+    "dependency":   "#ff6b6b",
+    "flow":         "#51cf66",
+    "note":         "#8d6e63"
+}
 
 PROPERTY_SCHEMA = {
     "__universal__": [],
@@ -88,14 +91,15 @@ def new_id():
 #  Edge
 # ─────────────────────────────────────────────────────────────────────────────
 class EdgeItem(QGraphicsPathItem):
-    def __init__(self, src, tgt, label="", edge_id=None, direction="→", edge_type="relationship"):
+    def __init__(self, src, tgt, label="", edge_id=None, direction="→", edge_type="relationship", color=None):
         super().__init__()
-        self.edge_id   = edge_id or new_id()
+        self.edge_id     = edge_id or new_id()
         self.source_node = src
         self.target_node = tgt
-        self.label     = label
-        self.direction = direction
-        self.edge_type = edge_type
+        self.label       = label
+        self.direction   = direction
+        self.edge_type   = edge_type
+        self.color       = color or EDGE_TYPE_COLORS.get(edge_type, "#adb5bd")
 
         self.setZValue(0)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -103,7 +107,6 @@ class EdgeItem(QGraphicsPathItem):
         self._label_item = QGraphicsTextItem("", self)
         self._label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
         self._refresh_label_text()
-        self.update_path()
 
     def _refresh_label_text(self):
         parts = []
@@ -113,14 +116,16 @@ class EdgeItem(QGraphicsPathItem):
             parts.append(self.label)
         display = "  ".join(parts) if parts else ""
         self._label_item.setPlainText(display)
-        font = QFont("Segoe UI", SETTINGS["sidebar_font_size"] - 2)
+        
+        # Link label font explicitly to the canvas UI font setting minus 1
+        font = QFont("Segoe UI", SETTINGS["ui_font_size"] - 1)
         self._label_item.setFont(font)
-        self._label_item.setDefaultTextColor(qc("TEXT_MUTED"))
+        self._label_item.setDefaultTextColor(QColor(self.color))
+        self.update_path() # Required to recalculate midpoint center properly
 
     def set_label(self, text):
         self.label = text
         self._refresh_label_text()
-        self.update_path()
 
     def set_direction(self, d):
         self.direction = d
@@ -128,8 +133,8 @@ class EdgeItem(QGraphicsPathItem):
 
     def set_edge_type(self, t):
         self.edge_type = t
+        self.color = EDGE_TYPE_COLORS.get(t, self.color)
         self._refresh_label_text()
-        self.update_path()
 
     def update_path(self):
         sp = self.source_node.scenePos()
@@ -170,13 +175,14 @@ class EdgeItem(QGraphicsPathItem):
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
         style = Qt.DashLine if self.edge_type == "dependency" else Qt.DotLine if self.edge_type == "note" else Qt.SolidLine
-        pen = QPen(qc("ACCENT") if self.isSelected() else qc("EDGE_COLOR"), 2.0 if self.isSelected() else 1.2, style)
+        col = qc("ACCENT") if self.isSelected() else QColor(self.color)
+        pen = QPen(col, 2.0 if self.isSelected() else 1.2, style)
         self.setPen(pen)
         super().paint(painter, option, widget)
 
     def to_dict(self):
         return {"id": self.edge_id, "source": self.source_node.node_id, "target": self.target_node.node_id,
-                "label": self.label, "direction": self.direction, "edge_type": self.edge_type}
+                "label": self.label, "direction": self.direction, "edge_type": self.edge_type, "color": self.color}
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Node
@@ -192,7 +198,6 @@ class NodeItem(QGraphicsItem):
         self.edges      = []
         self.radius     = 14
 
-        # Schema injection
         self._inject_schema()
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
@@ -212,6 +217,7 @@ class NodeItem(QGraphicsItem):
                 self.properties[k] = ""
 
     def _refresh_text(self):
+        self.prepareGeometryChange() # Notify canvas of text size shifts
         self._text.setPlainText(self.label)
         sz = SETTINGS["ui_font_size"]
         self._text.setFont(QFont("Segoe UI", sz, QFont.Medium))
@@ -244,7 +250,6 @@ class NodeItem(QGraphicsItem):
             painter.setPen(QPen(Qt.white))
             painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
             painter.drawText(br, Qt.AlignCenter, str(filled_props))
-        self._refresh_text()
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -253,13 +258,11 @@ class NodeItem(QGraphicsItem):
 
     def add_edge(self, e):
         if e not in self.edges:
-            self.edges.append(e)
-            self._update_size()
+            self.edges.append(e); self._update_size()
 
     def remove_edge(self, e):
         if e in self.edges:
-            self.edges.remove(e)
-            self._update_size()
+            self.edges.remove(e); self._update_size()
 
     def _update_size(self):
         self.prepareGeometryChange()
@@ -273,7 +276,7 @@ class NodeItem(QGraphicsItem):
                 "node_type": self.node_type, "color": self.color, "properties": self.properties}
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Scene & View (Unchanged heavily aside from config checks)
+#  Scene & View
 # ─────────────────────────────────────────────────────────────────────────────
 class GraphScene(QGraphicsScene):
     node_selected = pyqtSignal(object)
@@ -334,13 +337,13 @@ class GraphScene(QGraphicsScene):
         for e in list(node.edges): self.delete_edge(e)
         self.nodes.pop(node.node_id, None); self.removeItem(node); self.graph_changed.emit()
 
-    def add_edge(self, src, tgt, label="", edge_id=None, direction=None, edge_type=None):
+    def add_edge(self, src, tgt, label="", edge_id=None, direction=None, edge_type=None, color=None):
         direction = direction or SETTINGS["default_direction"]
         edge_type = edge_type or SETTINGS["default_edge_type"]
-        if edge_type not in EDGE_TYPES: edge_type = EDGE_TYPES[0] if EDGE_TYPES else "relationship"
+        if edge_type not in EDGE_TYPE_COLORS: edge_type = list(EDGE_TYPE_COLORS.keys())[0] if EDGE_TYPE_COLORS else "relationship"
         for e in src.edges:
             if e.source_node is src and e.target_node is tgt and e.direction == direction: return None
-        e = EdgeItem(src, tgt, label=label, edge_id=edge_id, direction=direction, edge_type=edge_type)
+        e = EdgeItem(src, tgt, label=label, edge_id=edge_id, direction=direction, edge_type=edge_type, color=color)
         self.edges[e.edge_id] = e
         self.addItem(e); src.add_edge(e); tgt.add_edge(e)
         self.graph_changed.emit()
@@ -362,7 +365,7 @@ class GraphScene(QGraphicsScene):
         return {
             "types": {
                 "nodes": NODE_TYPE_COLORS,
-                "edges": EDGE_TYPES,
+                "edges": EDGE_TYPE_COLORS,
                 "schema": PROPERTY_SCHEMA,
                 "settings": SETTINGS
             },
@@ -373,20 +376,25 @@ class GraphScene(QGraphicsScene):
     def load_dict(self, data):
         self.clear(); self.nodes.clear(); self.edges.clear()
         
-        # Restore environment configs
         types = data.get("types", {})
         if "nodes" in types: NODE_TYPE_COLORS.clear(); NODE_TYPE_COLORS.update(types["nodes"])
-        if "edges" in types: EDGE_TYPES[:] = types["edges"]
+        if "edges" in types: 
+            EDGE_TYPE_COLORS.clear()
+            # Backward compat for JSONs saved as list
+            if isinstance(types["edges"], list):
+                for et in types["edges"]: EDGE_TYPE_COLORS[et] = "#adb5bd"
+            else:
+                EDGE_TYPE_COLORS.update(types["edges"])
         if "schema" in types: PROPERTY_SCHEMA.clear(); PROPERTY_SCHEMA.update(types["schema"])
         if "settings" in types: SETTINGS.update(types["settings"])
 
-        # Fallback snippet if old JSON
+        # Fallbacks for raw loaded items missing their type logic
         for nd in data.get("nodes", []):
             nt = nd.get("node_type", "default")
             if nt not in NODE_TYPE_COLORS: NODE_TYPE_COLORS[nt] = nd.get("color", "#888888")
         for ed in data.get("edges", []):
             et = ed.get("edge_type", "relationship")
-            if et not in EDGE_TYPES: EDGE_TYPES.append(et)
+            if et not in EDGE_TYPE_COLORS: EDGE_TYPE_COLORS[et] = ed.get("color", "#adb5bd")
 
         for nd in data.get("nodes", []):
             self.add_node(label=nd["label"], x=nd["x"], y=nd["y"], node_type=nd.get("node_type"), 
@@ -395,7 +403,8 @@ class GraphScene(QGraphicsScene):
             s = self.nodes.get(ed["source"]); t = self.nodes.get(ed["target"])
             if s and t:
                 self.add_edge(s, t, label=ed.get("label",""), edge_id=ed["id"],
-                              direction=ed.get("direction","→"), edge_type=ed.get("edge_type","relationship"))
+                              direction=ed.get("direction","→"), edge_type=ed.get("edge_type","relationship"),
+                              color=ed.get("color"))
 
     def mouseMoveEvent(self, event):
         if self._connecting and self._conn_line and self._conn_source:
@@ -414,13 +423,26 @@ class GraphScene(QGraphicsScene):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            clicked = next((i for i in self.items(event.scenePos()) if isinstance(i, (NodeItem, EdgeItem))), None)
+            items = self.items(event.scenePos())
+            clicked = None
+            # Allow text label clicking to resolve to the parent Node/Edge
+            for i in items:
+                if isinstance(i, NodeItem) or isinstance(i, EdgeItem):
+                    clicked = i
+                    break
+                elif isinstance(i, QGraphicsTextItem):
+                    parent = i.parentItem()
+                    if isinstance(parent, NodeItem) or isinstance(parent, EdgeItem):
+                        clicked = parent
+                        break
+
             if isinstance(clicked, NodeItem):
                 self.node_selected.emit(clicked); self.edge_selected.emit(None)
             elif isinstance(clicked, EdgeItem):
                 self.edge_selected.emit(clicked); self.node_selected.emit(None)
             else:
                 self.node_selected.emit(None); self.edge_selected.emit(None)
+                
         super().mousePressEvent(event)
 
 class CanvasView(QGraphicsView):
@@ -526,13 +548,17 @@ class CanvasView(QGraphicsView):
             elif ch == a_del: self.scene().delete_node(node)
         elif edge:
             a_lbl = menu.addAction("🏷️  Edit label")
+            a_col = menu.addAction("🎨  Change colour")
             a_dir = menu.addMenu("↔  Direction"); dir_acts = {a_dir.addAction(("✓ " if d == edge.direction else "    ") + d): d for d in EDGE_DIRECTIONS}
-            a_typ = menu.addMenu("⬡  Edge type"); typ_acts = {a_typ.addAction(("✓ " if t == edge.edge_type else "    ") + t): t for t in EDGE_TYPES}
+            a_typ = menu.addMenu("⬡  Edge type"); typ_acts = {a_typ.addAction(("✓ " if t == edge.edge_type else "    ") + t): t for t in EDGE_TYPE_COLORS}
             menu.addSeparator(); a_del = menu.addAction("🗑️  Delete edge")
             ch = menu.exec_(event.globalPos())
             if ch == a_lbl:
                 t, ok = QInputDialog.getText(self, "Edge Label", "Label:", text=edge.label)
                 if ok: edge.set_label(t); self.scene().graph_changed.emit()
+            elif ch == a_col:
+                c = QColorDialog.getColor(QColor(edge.color), self)
+                if c.isValid(): edge.color = c.name(); edge._refresh_label_text(); self.scene().update(); self.scene.graph_changed.emit()
             elif ch in dir_acts: edge.set_direction(dir_acts[ch]); self.scene().graph_changed.emit()
             elif ch in typ_acts: edge.set_edge_type(typ_acts[ch]); self.scene().graph_changed.emit()
             elif ch == a_del: self.scene().delete_edge(edge)
@@ -594,7 +620,7 @@ class PropRow(QFrame):
         lay.addWidget(self.key_lbl); lay.addWidget(self.val_edit); lay.addWidget(db)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Sidebar & Search (Snipped slightly for length, identical behavior)
+#  Sidebar & Search 
 # ─────────────────────────────────────────────────────────────────────────────
 class Sidebar(QWidget):
     def __init__(self, scene):
@@ -693,8 +719,20 @@ class Sidebar(QWidget):
         dc.currentTextChanged.connect(lambda d: (edge.set_direction(d), self.scene.graph_changed.emit())); self.cl.addWidget(dc)
 
         self._section("Edge Type")
-        etc = QComboBox(); etc.addItems(EDGE_TYPES); etc.setCurrentText(edge.edge_type); etc.setStyleSheet(self._combo())
+        etc = QComboBox(); etc.addItems(list(EDGE_TYPE_COLORS.keys())); etc.setCurrentText(edge.edge_type); etc.setStyleSheet(self._combo())
         etc.currentTextChanged.connect(lambda t: (edge.set_edge_type(t), self.scene.graph_changed.emit())); self.cl.addWidget(etc)
+
+        # Edge Colour overrides
+        col_row = QFrame(); col_row.setStyleSheet("background:transparent;"); col_lay = QHBoxLayout(col_row); col_lay.setContentsMargins(0,0,0,0)
+        self._edge_swatch = QPushButton(); self._edge_swatch.setFixedSize(28, 28); self._edge_swatch.setStyleSheet(f"background:{edge.color}; border-radius:14px; border:none;")
+        col_lbl = QLabel("Custom colour"); col_lbl.setStyleSheet(f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{SETTINGS['sidebar_font_size']-1}px;")
+        def _pick_col():
+            c = QColorDialog.getColor(QColor(edge.color), self)
+            if c.isValid():
+                edge.color = c.name(); self._edge_swatch.setStyleSheet(f"background:{edge.color}; border-radius:14px; border:none;")
+                edge._refresh_label_text(); self.scene.update(); self.scene.graph_changed.emit()
+        self._edge_swatch.clicked.connect(_pick_col)
+        col_lay.addWidget(self._edge_swatch); col_lay.addWidget(col_lbl); col_lay.addStretch(); self.cl.addWidget(col_row)
 
         self._section("Label")
         le = QLineEdit(edge.label); le.setStyleSheet(self._inp())
@@ -750,7 +788,7 @@ class SearchBar(QWidget):
         self.result_lbl.setText(f"{self._match_idx+1}/{len(self._matches)}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Settings dialog (Massively expanded with Types & Schema)
+#  Settings dialog 
 # ─────────────────────────────────────────────────────────────────────────────
 class SettingsDialog(QDialog):
     def __init__(self, parent, scene):
@@ -759,9 +797,8 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.setMinimumSize(500, 450)
         
-        # Operate on Deep Copies so "Cancel" does nothing.
         self.temp_colors = copy.deepcopy(NODE_TYPE_COLORS)
-        self.temp_edges = copy.deepcopy(EDGE_TYPES)
+        self.temp_edges = copy.deepcopy(EDGE_TYPE_COLORS)
         self.temp_schema = copy.deepcopy(PROPERTY_SCHEMA)
         self.temp_settings = copy.deepcopy(SETTINGS)
 
@@ -794,7 +831,6 @@ class SettingsDialog(QDialog):
         bb.setStyleSheet(f'QDialogButtonBox QPushButton[text="Cancel"] {{ background:{gc("BG_CARD")}; color:{gc("TEXT_PRIMARY")}; border:1px solid {gc("BORDER")}; }}')
         main_lay.addWidget(bb)
 
-    # --- TAB 1: General ---
     def _build_general_tab(self):
         w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(12)
         grp_font = QGroupBox("Eye Comfort"); gfl = QFormLayout(grp_font)
@@ -805,12 +841,11 @@ class SettingsDialog(QDialog):
 
         grp_def = QGroupBox("Defaults"); gdl = QFormLayout(grp_def)
         self.def_node_type = QComboBox(); self.def_node_type.addItems(list(self.temp_colors.keys())); self.def_node_type.setCurrentText(self.temp_settings["default_node_type"])
-        self.def_edge_type = QComboBox(); self.def_edge_type.addItems(self.temp_edges); self.def_edge_type.setCurrentText(self.temp_settings["default_edge_type"])
+        self.def_edge_type = QComboBox(); self.def_edge_type.addItems(list(self.temp_edges.keys())); self.def_edge_type.setCurrentText(self.temp_settings["default_edge_type"])
         self.def_direction = QComboBox(); self.def_direction.addItems(EDGE_DIRECTIONS); self.def_direction.setCurrentText(self.temp_settings["default_direction"])
         gdl.addRow("Default node type:", self.def_node_type); gdl.addRow("Default edge type:", self.def_edge_type); gdl.addRow("Default direction:", self.def_direction)
         lay.addWidget(grp_def); lay.addStretch(); return w
 
-    # --- TAB 2: Node & Edge Types ---
     def _build_types_tab(self):
         w = QWidget(); lay = QHBoxLayout(w)
         
@@ -820,145 +855,116 @@ class SettingsDialog(QDialog):
         for nt, col in self.temp_colors.items(): self._add_nt_list_item(nt, col)
         
         nt_btns = QHBoxLayout()
-        btn_add_nt = QPushButton("+ Add")
-        btn_col_nt = QPushButton("🎨 Colour")
-        btn_del_nt = QPushButton("- Delete")
+        btn_add_nt = QPushButton("+ Add"); btn_col_nt = QPushButton("🎨 Colour"); btn_del_nt = QPushButton("- Delete")
         btn_del_nt.setStyleSheet(f"background:{gc('ACCENT2')}; color:white; border-radius:4px; padding:6px 12px; font-weight:bold;")
-        
-        btn_add_nt.clicked.connect(self._add_node_type)
-        btn_col_nt.clicked.connect(self._change_node_color)
-        btn_del_nt.clicked.connect(self._delete_node_type)
-        
+        btn_add_nt.clicked.connect(self._add_node_type); btn_col_nt.clicked.connect(self._change_node_color); btn_del_nt.clicked.connect(self._delete_node_type)
         nt_btns.addWidget(btn_add_nt); nt_btns.addWidget(btn_col_nt); nt_btns.addWidget(btn_del_nt)
         nt_lay.addWidget(self.nt_list); nt_lay.addLayout(nt_btns); lay.addWidget(nt_grp)
 
         # Edge Types Panel
         et_grp = QGroupBox("Edge Types"); et_lay = QVBoxLayout(et_grp)
-        self.et_list = QListWidget(); self.et_list.addItems(self.temp_edges)
+        self.et_list = QListWidget()
+        for et, col in self.temp_edges.items(): self._add_et_list_item(et, col)
         
         et_btns = QHBoxLayout()
-        btn_add_et = QPushButton("+ Add")
-        btn_del_et = QPushButton("- Delete")
+        btn_add_et = QPushButton("+ Add"); btn_col_et = QPushButton("🎨 Colour"); btn_del_et = QPushButton("- Delete")
         btn_del_et.setStyleSheet(btn_del_nt.styleSheet())
-        
-        btn_add_et.clicked.connect(self._add_edge_type)
-        btn_del_et.clicked.connect(self._delete_edge_type)
-        
-        et_btns.addWidget(btn_add_et); et_btns.addWidget(btn_del_et)
+        btn_add_et.clicked.connect(self._add_edge_type); btn_col_et.clicked.connect(self._change_edge_color); btn_del_et.clicked.connect(self._delete_edge_type)
+        et_btns.addWidget(btn_add_et); et_btns.addWidget(btn_col_et); et_btns.addWidget(btn_del_et)
         et_lay.addWidget(self.et_list); et_lay.addLayout(et_btns); lay.addWidget(et_grp)
         
         return w
 
     def _add_nt_list_item(self, nt, col):
-        item = QListWidgetItem(nt)
-        pix = QPixmap(14, 14); pix.fill(QColor(col)); item.setIcon(QIcon(pix))
-        item.setData(Qt.UserRole, nt); self.nt_list.addItem(item)
+        item = QListWidgetItem(nt); pix = QPixmap(14, 14); pix.fill(QColor(col)); item.setIcon(QIcon(pix)); item.setData(Qt.UserRole, nt); self.nt_list.addItem(item)
+
+    def _add_et_list_item(self, et, col):
+        item = QListWidgetItem(et); pix = QPixmap(14, 14); pix.fill(QColor(col)); item.setIcon(QIcon(pix)); item.setData(Qt.UserRole, et); self.et_list.addItem(item)
 
     def _add_node_type(self):
         nt, ok = QInputDialog.getText(self, "New Node Type", "Type Name:")
         if ok and nt and nt not in self.temp_colors:
             col = QColorDialog.getColor(Qt.gray, self)
             if col.isValid():
-                self.temp_colors[nt] = col.name()
-                self._add_nt_list_item(nt, col.name())
-                self.def_node_type.addItem(nt)
+                self.temp_colors[nt] = col.name(); self._add_nt_list_item(nt, col.name()); self.def_node_type.addItem(nt)
+
+    def _add_edge_type(self):
+        et, ok = QInputDialog.getText(self, "New Edge Type", "Type Name:")
+        if ok and et and et not in self.temp_edges:
+            col = QColorDialog.getColor(QColor("#adb5bd"), self)
+            if col.isValid():
+                self.temp_edges[et] = col.name(); self._add_et_list_item(et, col.name()); self.def_edge_type.addItem(et)
 
     def _change_node_color(self):
         item = self.nt_list.currentItem()
         if not item: return
         nt = item.data(Qt.UserRole)
         c = QColorDialog.getColor(QColor(self.temp_colors[nt]), self)
-        if c.isValid():
-            self.temp_colors[nt] = c.name()
-            pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
+        if c.isValid(): self.temp_colors[nt] = c.name(); pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
+
+    def _change_edge_color(self):
+        item = self.et_list.currentItem()
+        if not item: return
+        et = item.data(Qt.UserRole)
+        c = QColorDialog.getColor(QColor(self.temp_edges[et]), self)
+        if c.isValid(): self.temp_edges[et] = c.name(); pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
 
     def _delete_node_type(self):
         item = self.nt_list.currentItem()
         if not item: return
         nt = item.data(Qt.UserRole)
-        if nt == "default":
-            QMessageBox.warning(self, "Denied", "Cannot delete the 'default' node type.")
-            return
-        if any(n.node_type == nt for n in self.scene.nodes.values()):
-            QMessageBox.warning(self, "In Use", f"Cannot delete '{nt}': It is in use by nodes on the canvas.")
-            return
+        if nt == "default": return QMessageBox.warning(self, "Denied", "Cannot delete the 'default' node type.")
+        if any(n.node_type == nt for n in self.scene.nodes.values()): return QMessageBox.warning(self, "In Use", f"Cannot delete '{nt}': It is in use by nodes on the canvas.")
         
         del self.temp_colors[nt]
         if nt in self.temp_schema: del self.temp_schema[nt]
         self.nt_list.takeItem(self.nt_list.row(item))
         idx = self.def_node_type.findText(nt); self.def_node_type.removeItem(idx)
 
-    def _add_edge_type(self):
-        et, ok = QInputDialog.getText(self, "New Edge Type", "Type Name:")
-        if ok and et and et not in self.temp_edges:
-            self.temp_edges.append(et); self.et_list.addItem(et)
-            self.def_edge_type.addItem(et)
-
     def _delete_edge_type(self):
         item = self.et_list.currentItem()
         if not item: return
-        et = item.text()
-        if et == "relationship":
-            QMessageBox.warning(self, "Denied", "Cannot delete the 'relationship' edge type.")
-            return
-        if any(e.edge_type == et for e in self.scene.edges.values()):
-            QMessageBox.warning(self, "In Use", f"Cannot delete '{et}': It is in use by edges on the canvas.")
-            return
+        et = item.data(Qt.UserRole)
+        if et == "relationship": return QMessageBox.warning(self, "Denied", "Cannot delete the 'relationship' edge type.")
+        if any(e.edge_type == et for e in self.scene.edges.values()): return QMessageBox.warning(self, "In Use", f"Cannot delete '{et}': It is in use by edges on the canvas.")
         
-        self.temp_edges.remove(et)
+        del self.temp_edges[et]
         self.et_list.takeItem(self.et_list.row(item))
         idx = self.def_edge_type.findText(et); self.def_edge_type.removeItem(idx)
 
-    # --- TAB 3: Property Schema ---
     def _build_props_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
-        
-        ctrl_lay = QHBoxLayout()
-        ctrl_lay.addWidget(QLabel("Target Type:"))
+        ctrl_lay = QHBoxLayout(); ctrl_lay.addWidget(QLabel("Target Type:"))
         self.schema_combo = QComboBox()
         self.schema_combo.addItems(["__universal__"] + list(self.temp_colors.keys()))
         self.schema_combo.currentTextChanged.connect(self._load_schema_list)
-        ctrl_lay.addWidget(self.schema_combo)
-        lay.addLayout(ctrl_lay)
-
-        self.schema_list = QListWidget()
-        lay.addWidget(self.schema_list)
-        
-        btn_lay = QHBoxLayout()
-        add_p = QPushButton("+ Add Property"); del_p = QPushButton("- Delete Property")
+        ctrl_lay.addWidget(self.schema_combo); lay.addLayout(ctrl_lay)
+        self.schema_list = QListWidget(); lay.addWidget(self.schema_list)
+        btn_lay = QHBoxLayout(); add_p = QPushButton("+ Add Property"); del_p = QPushButton("- Delete Property")
         del_p.setStyleSheet(f"background:{gc('ACCENT2')}; color:white; border-radius:4px; padding:6px 12px; font-weight:bold;")
-        add_p.clicked.connect(self._add_schema_prop)
-        del_p.clicked.connect(self._del_schema_prop)
+        add_p.clicked.connect(self._add_schema_prop); del_p.clicked.connect(self._del_schema_prop)
         btn_lay.addWidget(add_p); btn_lay.addWidget(del_p); lay.addLayout(btn_lay)
-
         self._load_schema_list(self.schema_combo.currentText())
         return w
 
     def _load_schema_list(self, target):
-        self.schema_list.clear()
-        props = self.temp_schema.get(target, [])
-        self.schema_list.addItems(props)
+        self.schema_list.clear(); self.schema_list.addItems(self.temp_schema.get(target, []))
 
     def _add_schema_prop(self):
         target = self.schema_combo.currentText()
         p, ok = QInputDialog.getText(self, "New Property", "Property Key:")
         if ok and p:
             if target not in self.temp_schema: self.temp_schema[target] = []
-            if p not in self.temp_schema[target]:
-                self.temp_schema[target].append(p)
-                self.schema_list.addItem(p)
+            if p not in self.temp_schema[target]: self.temp_schema[target].append(p); self.schema_list.addItem(p)
 
     def _del_schema_prop(self):
         item = self.schema_list.currentItem()
         if not item: return
         target = self.schema_combo.currentText()
-        p = item.text()
-        self.temp_schema[target].remove(p)
-        self.schema_list.takeItem(self.schema_list.row(item))
+        self.temp_schema[target].remove(item.text()); self.schema_list.takeItem(self.schema_list.row(item))
 
-    # --- Apply Everything Safely ---
     def _apply(self):
-        global NODE_TYPE_COLORS, EDGE_TYPES, PROPERTY_SCHEMA, SETTINGS
+        global NODE_TYPE_COLORS, EDGE_TYPE_COLORS, PROPERTY_SCHEMA, SETTINGS
 
         self.temp_settings["ui_font_size"] = self.ui_font_spin.value()
         self.temp_settings["sidebar_font_size"] = self.sb_font_spin.value()
@@ -966,37 +972,25 @@ class SettingsDialog(QDialog):
         self.temp_settings["default_edge_type"] = self.def_edge_type.currentText()
         self.temp_settings["default_direction"] = self.def_direction.currentText()
 
-        # Fallback protections if default was completely deleted via code magic
-        if self.temp_settings["default_node_type"] not in self.temp_colors:
-            self.temp_settings["default_node_type"] = list(self.temp_colors.keys())[0] if self.temp_colors else "default"
-        if self.temp_settings["default_edge_type"] not in self.temp_edges:
-            self.temp_settings["default_edge_type"] = self.temp_edges[0] if self.temp_edges else "relationship"
+        if self.temp_settings["default_node_type"] not in self.temp_colors: self.temp_settings["default_node_type"] = list(self.temp_colors.keys())[0] if self.temp_colors else "default"
+        if self.temp_settings["default_edge_type"] not in self.temp_edges: self.temp_settings["default_edge_type"] = list(self.temp_edges.keys())[0] if self.temp_edges else "relationship"
 
-        # Apply schema changes intelligently across all nodes
         for node in self.scene.nodes.values():
             old_expected = PROPERTY_SCHEMA.get("__universal__", []) + PROPERTY_SCHEMA.get(node.node_type, [])
             new_expected = self.temp_schema.get("__universal__", []) + self.temp_schema.get(node.node_type, [])
-            
-            # 1. Add new schema keys as blank (if they don't already exist somehow)
             for k in new_expected:
-                if k not in node.properties:
-                    node.properties[k] = ""
-            
-            # 2. Find keys that were deleted from schema and delete from node ONLY if empty.
-            deleted_keys = set(old_expected) - set(new_expected)
-            for k in deleted_keys:
-                if k in node.properties and str(node.properties.get(k, "")).strip() == "":
-                    del node.properties[k]
-
-            # Update colors if they changed
+                if k not in node.properties: node.properties[k] = ""
+            for k in set(old_expected) - set(new_expected):
+                if k in node.properties and str(node.properties.get(k, "")).strip() == "": del node.properties[k]
             node.color = self.temp_colors.get(node.node_type, node.color)
 
-        # Overwrite global states
+        for edge in self.scene.edges.values():
+            edge.color = self.temp_edges.get(edge.edge_type, edge.color)
+
         NODE_TYPE_COLORS.clear(); NODE_TYPE_COLORS.update(self.temp_colors)
-        EDGE_TYPES[:] = self.temp_edges
+        EDGE_TYPE_COLORS.clear(); EDGE_TYPE_COLORS.update(self.temp_edges)
         PROPERTY_SCHEMA.clear(); PROPERTY_SCHEMA.update(self.temp_schema)
         SETTINGS.update(self.temp_settings)
-
         self.accept()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1118,6 +1112,7 @@ class MainWindow(QMainWindow):
         self._apply_global_style(); self.search_bar.apply_style(); self.sidebar.apply_style()
         for item in self.scene.items():
             if hasattr(item, "_refresh_text"): item._refresh_text()
+            if hasattr(item, "_refresh_label_text"): item._refresh_label_text()
             item.update()
         self.view.viewport().update()
         if self.sidebar._node: self.sidebar.show_node(self.sidebar._node)
@@ -1126,9 +1121,12 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         if SettingsDialog(self, self.scene).exec_():
+            app.setFont(QFont("Segoe UI", SETTINGS["ui_font_size"])) # Enforce globally to standard elements 
             self._apply_global_style(); self.search_bar.apply_style(); self.sidebar.apply_style()
+            # Force geometric recalculations for explicit drawn text on the canvas
             for item in self.scene.items():
                 if hasattr(item, "_refresh_text"): item._refresh_text()
+                if hasattr(item, "_refresh_label_text"): item._refresh_label_text()
                 item.update()
             self.view.viewport().update()
             if self.sidebar._node: self.sidebar.show_node(self.sidebar._node)
