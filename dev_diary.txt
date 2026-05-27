@@ -1,0 +1,25 @@
+Problems:
+ - when search is active meaning there is something in the search bar , panning is problematic
+
+
+
+
+ - is there a limit of canvas, total zooming out and panning is not moving to new area
+
+ - panning + zooming is giving issues , seems like the container or the canvas is limited
+
+
+To be added :
+
+settings -> font size and other for eye comfors, sidebar fonts as well
+
+shrotcuts for sidebar, copy and paste
+
+holding space and panning with left click
+
+node types , edge types + directional orientation, color types to be added
+
+settings can be added to configure default properties (universally / per node type, colors per node type and per edge type or default node or default edge
+
+by interacting with the edge in the canvas we can alter the node pointing directionalry (->, <-, <->, - (no direcitno)
+
