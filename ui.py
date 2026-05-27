@@ -192,10 +192,17 @@ class SettingsDialog(QDialog):
         main_lay = QVBoxLayout(self); self.tabs = QTabWidget()
         self.tabs.addTab(self._build_general_tab(), "General"); self.tabs.addTab(self._build_types_tab(), "Node & Edge Types"); self.tabs.addTab(self._build_props_tab(), "Property Schema")
         main_lay.addWidget(self.tabs)
-        bb = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Cancel); bb.button(QDialogButtonBox.Apply).setText("Save Settings")
-        bb.accepted.connect(self._apply); bb.rejected.connect(self.reject); bb.setStyleSheet(f'QDialogButtonBox QPushButton[text="Cancel"] {{ background:{gc("BG_CARD")}; color:{gc("TEXT_PRIMARY")}; border:1px solid {gc("BORDER")}; }}')
+        
+        # --- THE FIX IS HERE ---
+        # Changed .Apply to .Save so the button properly emits the accepted signal
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText("Save Settings")
+        bb.accepted.connect(self._apply)
+        bb.rejected.connect(self.reject)
+        bb.setStyleSheet(f'QDialogButtonBox QPushButton[text="Cancel"] {{ background:{gc("BG_CARD")}; color:{gc("TEXT_PRIMARY")}; border:1px solid {gc("BORDER")}; }}')
         main_lay.addWidget(bb)
 
+        
     def _build_general_tab(self):
         w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(12)
         grp_font = QGroupBox("Eye Comfort"); gfl = QFormLayout(grp_font)
