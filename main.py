@@ -5,9 +5,9 @@ import sys, json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QSplitter,
     QAction, QLabel, QFileDialog, QMessageBox, QInputDialog, QShortcut,
-    QToolButton, QMenu,
+    QToolButton, QMenu, QFrame, QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
+from PyQt5.QtCore import Qt, QTimer, QEvent
 from PyQt5.QtGui import QFont, QKeySequence, QBrush
 
 import config
@@ -49,6 +49,19 @@ class MainWindow(QMainWindow):
             QToolBar QToolButton:hover   {{ background:{gc('BG_CARD')}; }}
             QToolBar QToolButton:pressed {{ background:{gc('ACCENT')}; color:white; }}
             QToolBar QToolButton:checked {{ background:{gc('ACCENT')}; color:white; }}
+            QFrame#TopToolbar {{
+                background:{gc('BG_PANEL')}; border-bottom:1px solid {gc('BORDER')};
+            }}
+            QFrame#TopToolbar QToolButton {{
+                background:transparent; color:{gc('TEXT_PRIMARY')}; border:none;
+                border-radius:6px; padding:5px 10px; font-size:{sf+1}px;
+            }}
+            QFrame#TopToolbar QToolButton:hover {{ background:{gc('BG_CARD')}; }}
+            QFrame#TopToolbar QToolButton:pressed {{ background:{gc('ACCENT')}; color:white; }}
+            QFrame#TopToolbar QToolButton:checked {{ background:{gc('ACCENT')}; color:white; }}
+            QFrame#ToolbarSeparator {{
+                background:{gc('BORDER')}; border:none;
+            }}
             QStatusBar {{
                 background:{gc('BG_PANEL')}; color:{gc('TEXT_MUTED')};
                 font-size:{sf}px;
@@ -70,6 +83,7 @@ class MainWindow(QMainWindow):
         ml = QVBoxLayout(central)
         ml.setContentsMargins(0, 0, 0, 0)
         ml.setSpacing(0)
+        self._root_layout = ml
 
         self.search_bar = SearchBar(self.scene, self.view)
         self.search_bar.hide()  # Docked but hidden by default
@@ -86,20 +100,22 @@ class MainWindow(QMainWindow):
         ml.addWidget(self.splitter)
 
     def _build_toolbar(self):
-        tb = self.addToolBar("Main")
-        tb.setMovable(False)
-        tb.setIconSize(QSize(16, 16))
-        tb.installEventFilter(self)
+        bar = QFrame()
+        bar.setObjectName("TopToolbar")
+        bar.setMinimumWidth(0)
+        bar.setFixedHeight(40)
+        bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        bar.installEventFilter(self)
 
-        self._toolbar = tb
+        self._toolbar = bar
         self._toolbar_items = []
-        self._toolbar_overflow_menu = QMenu(self)
-        self._toolbar_overflow_button = QToolButton(self)
+        self._toolbar_hidden_actions = []
+        self._toolbar_overflow_button = QToolButton(bar)
         self._toolbar_overflow_button.setText(">>")
         self._toolbar_overflow_button.setToolTip("More tools")
-        self._toolbar_overflow_button.setPopupMode(QToolButton.InstantPopup)
-        self._toolbar_overflow_button.setMenu(self._toolbar_overflow_menu)
         self._toolbar_overflow_button.setAutoRaise(True)
+        self._toolbar_overflow_button.setMinimumWidth(0)
+        self._toolbar_overflow_button.clicked.connect(self._show_toolbar_overflow)
 
         def btn(text, tip, fn, sc=None):
             a = QAction(text, self)
@@ -107,14 +123,20 @@ class MainWindow(QMainWindow):
             a.triggered.connect(fn)
             if sc:
                 a.setShortcut(sc)
-            tb.addAction(a)
-            self._toolbar_items.append((a, False))
+            self.addAction(a)
+            b = QToolButton(bar)
+            b.setDefaultAction(a)
+            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            b.setAutoRaise(True)
+            b.setMinimumWidth(0)
+            self._toolbar_items.append({"action": a, "widget": b, "separator": False})
             return a
 
         def sep():
-            a = tb.addSeparator()
-            self._toolbar_items.append((a, True))
-            return a
+            line = QFrame(bar)
+            line.setObjectName("ToolbarSeparator")
+            self._toolbar_items.append({"action": None, "widget": line, "separator": True})
+            return line
 
         btn("➕ Node",    "Add node (N)",            self._add_node_prompt, "N")
         btn("🔗 Connect", "Connect selected (C)",     self._start_connect,   "C")
@@ -128,8 +150,13 @@ class MainWindow(QMainWindow):
         self.search_act.setShortcut("Ctrl+F")
         self.search_act.setCheckable(True)
         self.search_act.toggled.connect(self._on_search_toggled)
-        tb.addAction(self.search_act)
-        self._toolbar_items.append((self.search_act, False))
+        self.addAction(self.search_act)
+        search_btn = QToolButton(bar)
+        search_btn.setDefaultAction(self.search_act)
+        search_btn.setAutoRaise(True)
+        search_btn.setMinimumWidth(0)
+        self._toolbar_items.append(
+            {"action": self.search_act, "widget": search_btn, "separator": False})
         
         sep()
         btn("💾 Save",    "Save (Ctrl+S)",             self._save,            "Ctrl+S")
@@ -144,7 +171,7 @@ class MainWindow(QMainWindow):
         sep()
         btn("🗑 Clear",   "Clear graph",               self._clear_all)
 
-        self._toolbar_overflow_action = tb.addWidget(self._toolbar_overflow_button)
+        self._root_layout.insertWidget(0, bar)
         QTimer.singleShot(0, self._update_toolbar_overflow)
 
     def eventFilter(self, obj, event):
@@ -156,45 +183,96 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_toolbar"):
             return
 
-        tb = self._toolbar
-        for action, _is_sep in self._toolbar_items:
-            action.setVisible(True)
-            widget = tb.widgetForAction(action)
-            if widget:
-                widget.setVisible(True)
-        self._toolbar_overflow_action.setVisible(False)
-        self._toolbar_overflow_button.setVisible(False)
+        left_margin = 12
+        right_margin = 8
+        top_margin = 4
+        spacing = 6
+        button_height = 24
+
+        for item in self._toolbar_items:
+            item["widget"].setVisible(True)
 
         reserve = self._toolbar_overflow_button.sizeHint().width() + 18
-        available = max(0, tb.width() - reserve)
+        available = max(0, self._toolbar.width() - reserve
+                        - left_margin - right_margin)
         used = 0
         hidden = []
 
-        for action, is_sep in self._toolbar_items:
-            widget = tb.widgetForAction(action)
-            width = widget.sizeHint().width() if widget else 8
-            if not is_sep and used + width > available:
-                hidden.append(action)
-                if widget:
-                    widget.setVisible(False)
+        for item in self._toolbar_items:
+            widget = item["widget"]
+            width = 1 if item["separator"] else widget.sizeHint().width()
+            if not item["separator"] and used + width > available:
+                hidden.append(item["action"])
+                widget.setVisible(False)
             else:
-                used += width
+                used += width + spacing
 
-        for action, is_sep in self._toolbar_items:
-            if is_sep:
-                action.setVisible(not hidden)
+        if hidden:
+            visible_regular = [
+                item for item in self._toolbar_items
+                if not item["separator"] and item["widget"].isVisible()]
+            seen_visible = False
+            for idx, item in enumerate(self._toolbar_items):
+                if not item["separator"]:
+                    if item["widget"].isVisible():
+                        seen_visible = True
+                    continue
+                next_visible = any(
+                    not next_item["separator"] and next_item["widget"].isVisible()
+                    for next_item in
+                    self._toolbar_items[idx + 1:]
+                )
+                item["widget"].setVisible(bool(visible_regular)
+                                          and seen_visible
+                                          and next_visible)
 
-        self._toolbar_overflow_menu.clear()
-        for action in hidden:
-            menu_action = QAction(action.text(), self)
+        self._toolbar_hidden_actions = hidden
+        self._toolbar_overflow_button.setVisible(bool(hidden))
+        x = left_margin
+        for item in self._toolbar_items:
+            widget = item["widget"]
+            if not widget.isVisible():
+                continue
+            width = 1 if item["separator"] else widget.sizeHint().width()
+            widget.setGeometry(x, top_margin, width, button_height)
+            x += width + spacing
+
+        if hidden:
+            width = self._toolbar_overflow_button.sizeHint().width()
+            self._toolbar_overflow_button.setGeometry(
+                x, top_margin, width, button_height)
+
+    def _show_toolbar_overflow(self):
+        if not self._toolbar_hidden_actions:
+            self._update_toolbar_overflow()
+        if not self._toolbar_hidden_actions:
+            return
+
+        menu = QMenu(self)
+        action_map = {}
+        for action in self._toolbar_hidden_actions:
+            menu_action = QAction(action.text(), menu)
             menu_action.setToolTip(action.toolTip())
             menu_action.setEnabled(action.isEnabled())
             menu_action.setCheckable(action.isCheckable())
             menu_action.setChecked(action.isChecked())
-            menu_action.triggered.connect(lambda _checked=False, a=action: a.trigger())
-            self._toolbar_overflow_menu.addAction(menu_action)
-        self._toolbar_overflow_action.setVisible(bool(hidden))
-        self._toolbar_overflow_button.setVisible(bool(hidden))
+            menu.addAction(menu_action)
+            action_map[menu_action] = action
+
+        pos = self._toolbar_overflow_button.mapToGlobal(
+            self._toolbar_overflow_button.rect().bottomLeft())
+        selected = menu.exec_(pos)
+        if selected:
+            self._trigger_overflow_action(
+                action_map[selected],
+                selected.isChecked() if selected.isCheckable() else False)
+
+    def _trigger_overflow_action(self, action, checked=False):
+        if action.isCheckable():
+            action.setChecked(checked)
+        else:
+            action.trigger()
+        QTimer.singleShot(0, self._update_toolbar_overflow)
 
     def _bind_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+C"), self.view,
