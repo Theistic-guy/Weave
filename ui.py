@@ -343,10 +343,15 @@ class Sidebar(QWidget):
 #  SearchBar
 # ─────────────────────────────────────────────────────────────────────────────
 class SearchBar(QWidget):
+    hidden_by_escape = pyqtSignal()
+
     def __init__(self, scene, view):
         super().__init__()
         self.scene = scene; self.view = view
         self._matches = []; self._match_idx = 0
+        
+        # Prevent the massive empty vertical gap
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 7, 12, 7); lay.setSpacing(6)
@@ -374,7 +379,9 @@ class SearchBar(QWidget):
         from PyQt5.QtCore import QEvent
         if (obj == self.edit and event.type() == QEvent.KeyPress
                 and event.key() == Qt.Key_Escape):
-            self.edit.clear(); self.view.setFocus(); return True
+            # Emit signal to tell the main window to untoggle the button and hide
+            self.hidden_by_escape.emit() 
+            return True
         return False
 
     def apply_style(self):
@@ -420,22 +427,13 @@ class SearchBar(QWidget):
 #  SettingsDialog
 # ─────────────────────────────────────────────────────────────────────────────
 class SettingsDialog(QDialog):
-    """
-    Tabs:
-      General        — font sizes, default type/direction
-      Node & Edge Types — add / rename / change-colour / delete types
-      Property Schema — universal + per-type template keys
-    Bottom row:
-      Save Settings   — commits to running state
-      Save as Default — also writes graphcanvas_defaults.json
-      Cancel
-    """
     def __init__(self, parent, scene):
         super().__init__(parent)
         self.scene = scene
         self.setWindowTitle("Settings")
-        self.setMinimumSize(540, 520)
-        self.resize(580, 580)
+        # Boosted minimum sizes to fix clipped text on buttons
+        self.setMinimumSize(650, 520)
+        self.resize(780, 580)
 
         # Deep copies — nothing touches global state until Save
         self.temp_colors   = copy.deepcopy(config.NODE_TYPE_COLORS)

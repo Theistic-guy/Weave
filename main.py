@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
             }}
             QToolBar QToolButton:hover   {{ background:{gc('BG_CARD')}; }}
             QToolBar QToolButton:pressed {{ background:{gc('ACCENT')}; color:white; }}
+            QToolBar QToolButton:checked {{ background:{gc('ACCENT')}; color:white; }}
             QStatusBar {{
                 background:{gc('BG_PANEL')}; color:{gc('TEXT_MUTED')};
                 font-size:{sf}px;
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         ml.setSpacing(0)
 
         self.search_bar = SearchBar(self.scene, self.view)
+        self.search_bar.hide()  # Docked but hidden by default
         ml.addWidget(self.search_bar)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -99,7 +101,15 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         self._sim_btn = btn("▶ Simulate", "Force layout (L)", self._toggle_layout, "L")
         tb.addSeparator()
-        btn("🔍",         "Search (Ctrl+F)",          lambda: self.search_bar.edit.setFocus(), "Ctrl+F")
+        
+        # Proper checkable toggle action for Search
+        self.search_act = QAction("🔍", self)
+        self.search_act.setToolTip("Search (Ctrl+F)")
+        self.search_act.setShortcut("Ctrl+F")
+        self.search_act.setCheckable(True)
+        self.search_act.toggled.connect(self._on_search_toggled)
+        tb.addAction(self.search_act)
+        
         tb.addSeparator()
         btn("💾 Save",    "Save (Ctrl+S)",             self._save,            "Ctrl+S")
         btn("📂 Load",    "Load (Ctrl+O)",             self._load,            "Ctrl+O")
@@ -132,8 +142,20 @@ class MainWindow(QMainWindow):
         self.scene.node_selected.connect(self._on_node_sel)
         self.scene.edge_selected.connect(self._on_edge_sel)
         self.scene.graph_changed.connect(self._on_changed)
+        
+        # Link pressing escape inside the search bar to unchecking the toolbar button
+        self.search_bar.hidden_by_escape.connect(lambda: self.search_act.setChecked(False))
 
     # ── Signal handlers ───────────────────────────────────────────────────────
+    def _on_search_toggled(self, checked):
+        self.search_bar.setVisible(checked)
+        if checked:
+            self.search_bar.edit.setFocus()
+            self.search_bar.edit.selectAll()
+        else:
+            self.search_bar.edit.clear()
+            self.view.setFocus()
+
     def _on_node_sel(self, node):
         if node:
             self.sidebar.show_node(node)
@@ -182,17 +204,19 @@ class MainWindow(QMainWindow):
         self._sim_btn.setText("⏸ Pause" if active else "▶ Simulate")
 
     def _fit_view(self):
+        """Fit all content to view — 'go home' button."""
         if self.scene.nodes:
             rect = self.scene.itemsBoundingRect().adjusted(-80, -80, 80, 80)
             self.view.fitInView(rect, Qt.KeepAspectRatio)
-            scl = self.view.transform().m11()
+            # Clamp zoom
+            t   = self.view.transform()
+            scl = t.m11()
             if scl > self.view.MAX_ZOOM:
                 self.view._set_zoom(self.view.MAX_ZOOM)
             elif scl < self.view.MIN_ZOOM:
                 self.view._set_zoom(self.view.MIN_ZOOM)
-            else:
-                self.view._scale = scl
-                self.view.zoom_changed.emit(scl)
+            self.view._scale = self.view.transform().m11()
+            self.view.zoom_changed.emit(self.view._scale)
         else:
             self.view.resetTransform()
             self.view._scale = 1.0
