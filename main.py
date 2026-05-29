@@ -5,8 +5,9 @@ import sys, json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QSplitter,
     QAction, QLabel, QFileDialog, QMessageBox, QInputDialog, QShortcut,
+    QToolButton, QMenu,
 )
-from PyQt5.QtCore import Qt, QSize, QTimer
+from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
 from PyQt5.QtGui import QFont, QKeySequence, QBrush
 
 import config
@@ -80,12 +81,25 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.sidebar)
         self.splitter.setSizes([1140, 290])
         self.splitter.setHandleWidth(1)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
         ml.addWidget(self.splitter)
 
     def _build_toolbar(self):
         tb = self.addToolBar("Main")
         tb.setMovable(False)
         tb.setIconSize(QSize(16, 16))
+        tb.installEventFilter(self)
+
+        self._toolbar = tb
+        self._toolbar_items = []
+        self._toolbar_overflow_menu = QMenu(self)
+        self._toolbar_overflow_button = QToolButton(self)
+        self._toolbar_overflow_button.setText(">>")
+        self._toolbar_overflow_button.setToolTip("More tools")
+        self._toolbar_overflow_button.setPopupMode(QToolButton.InstantPopup)
+        self._toolbar_overflow_button.setMenu(self._toolbar_overflow_menu)
+        self._toolbar_overflow_button.setAutoRaise(True)
 
         def btn(text, tip, fn, sc=None):
             a = QAction(text, self)
@@ -94,13 +108,19 @@ class MainWindow(QMainWindow):
             if sc:
                 a.setShortcut(sc)
             tb.addAction(a)
+            self._toolbar_items.append((a, False))
+            return a
+
+        def sep():
+            a = tb.addSeparator()
+            self._toolbar_items.append((a, True))
             return a
 
         btn("➕ Node",    "Add node (N)",            self._add_node_prompt, "N")
         btn("🔗 Connect", "Connect selected (C)",     self._start_connect,   "C")
-        tb.addSeparator()
+        sep()
         self._sim_btn = btn("▶ Simulate", "Force layout (L)", self._toggle_layout, "L")
-        tb.addSeparator()
+        sep()
         
         # Proper checkable toggle action for Search
         self.search_act = QAction("🔍", self)
@@ -109,19 +129,72 @@ class MainWindow(QMainWindow):
         self.search_act.setCheckable(True)
         self.search_act.toggled.connect(self._on_search_toggled)
         tb.addAction(self.search_act)
+        self._toolbar_items.append((self.search_act, False))
         
-        tb.addSeparator()
+        sep()
         btn("💾 Save",    "Save (Ctrl+S)",             self._save,            "Ctrl+S")
         btn("📂 Load",    "Load (Ctrl+O)",             self._load,            "Ctrl+O")
         btn("🆕 New",     "New graph (Ctrl+N)",        self._new_graph,       "Ctrl+N")
-        tb.addSeparator()
+        sep()
         btn("⛶ Fit",     "Fit all to view (F)",       self._fit_view,        "F")
         btn("🔲 Grid",    "Toggle grid",               self._toggle_grid)
-        tb.addSeparator()
+        sep()
         btn("🌗 Theme",   "Toggle theme (T)",          self._toggle_theme,    "T")
         btn("⚙ Settings", "Settings",                 self._open_settings)
-        tb.addSeparator()
+        sep()
         btn("🗑 Clear",   "Clear graph",               self._clear_all)
+
+        self._toolbar_overflow_action = tb.addWidget(self._toolbar_overflow_button)
+        QTimer.singleShot(0, self._update_toolbar_overflow)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "_toolbar", None) and event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._update_toolbar_overflow)
+        return super().eventFilter(obj, event)
+
+    def _update_toolbar_overflow(self):
+        if not hasattr(self, "_toolbar"):
+            return
+
+        tb = self._toolbar
+        for action, _is_sep in self._toolbar_items:
+            action.setVisible(True)
+            widget = tb.widgetForAction(action)
+            if widget:
+                widget.setVisible(True)
+        self._toolbar_overflow_action.setVisible(False)
+        self._toolbar_overflow_button.setVisible(False)
+
+        reserve = self._toolbar_overflow_button.sizeHint().width() + 18
+        available = max(0, tb.width() - reserve)
+        used = 0
+        hidden = []
+
+        for action, is_sep in self._toolbar_items:
+            widget = tb.widgetForAction(action)
+            width = widget.sizeHint().width() if widget else 8
+            if not is_sep and used + width > available:
+                hidden.append(action)
+                if widget:
+                    widget.setVisible(False)
+            else:
+                used += width
+
+        for action, is_sep in self._toolbar_items:
+            if is_sep:
+                action.setVisible(not hidden)
+
+        self._toolbar_overflow_menu.clear()
+        for action in hidden:
+            menu_action = QAction(action.text(), self)
+            menu_action.setToolTip(action.toolTip())
+            menu_action.setEnabled(action.isEnabled())
+            menu_action.setCheckable(action.isCheckable())
+            menu_action.setChecked(action.isChecked())
+            menu_action.triggered.connect(lambda _checked=False, a=action: a.trigger())
+            self._toolbar_overflow_menu.addAction(menu_action)
+        self._toolbar_overflow_action.setVisible(bool(hidden))
+        self._toolbar_overflow_button.setVisible(bool(hidden))
 
     def _bind_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+C"), self.view,
@@ -226,7 +299,7 @@ class MainWindow(QMainWindow):
         self.view.viewport().update()
 
     def _toggle_sidebar(self):
-        self.sidebar.setVisible(not self.sidebar.isVisible())
+        self.sidebar.toggle_collapsed()
 
     def _toggle_theme(self):
         config.CURRENT_THEME = "dark" if config.CURRENT_THEME == "light" else "light"
@@ -321,37 +394,47 @@ class MainWindow(QMainWindow):
             self._update_status()
 
     def _load_sample(self):
+        one_way = config.SETTINGS["default_direction"]
         data = {
             "nodes": [
-                {"id": "n1", "label": "BCCI", "x": 0, "y": 0,
+                {"id": "n1", "label": "Problem", "x": -260, "y": -40,
+                 "node_type": "concept", "color": None,
+                 "properties": {"Question": "What needs to improve?"}},
+                {"id": "n2", "label": "Research", "x": -80, "y": -140,
+                 "node_type": "process", "color": None,
+                 "properties": {"status": "in progress", "owner": "team"}},
+                {"id": "n3", "label": "Dataset", "x": 120, "y": -120,
+                 "node_type": "data", "color": None,
+                 "properties": {"source": "observations"}},
+                {"id": "n4", "label": "Prototype", "x": 120, "y": 80,
                  "node_type": "object", "color": None,
-                 "properties": {"Type": "Organization", "Founded": "1928"}},
-                {"id": "n2", "label": "Ms. Subramaniam", "x": -200, "y": 80,
-                 "node_type": "default", "color": None,
-                 "properties": {"Role": "Member", "Joined": "2010"}},
-                {"id": "n3", "label": "IPL", "x": 200, "y": 80,
+                 "properties": {"Version": "draft"}},
+                {"id": "n5", "label": "User Feedback", "x": -90, "y": 140,
                  "node_type": "event", "color": None,
-                 "properties": {"Season": "2024", "Teams": "10"}},
-                {"id": "n4", "label": "Sponsorship Deal", "x": 0, "y": 200,
+                 "properties": {"Signal": "needs and friction"}},
+                {"id": "n6", "label": "Decision", "x": 330, "y": 10,
                  "node_type": "note", "color": None,
-                 "properties": {"Value": "₹500Cr", "Year": "2023"}},
+                 "properties": {"Outcome": "next step"}},
             ],
             "edges": [
-                {"id": "e1", "source": "n2", "target": "n1",
-                 "label": "MEMBER OF", "direction": "→", "edge_type": "relationship"},
-                {"id": "e2", "source": "n1", "target": "n3",
-                 "label": "ORGANISES", "direction": "→", "edge_type": "dependency"},
-                {"id": "e3", "source": "n4", "target": "n3",
-                 "label": "FUNDS", "direction": "→", "edge_type": "flow"},
-                {"id": "e4", "source": "n2", "target": "n3",
-                 "label": "PARTICIPATES", "direction": "↔", "edge_type": "relationship"},
+                {"id": "e1", "source": "n1", "target": "n2",
+                 "label": "frames", "direction": one_way, "edge_type": "relationship"},
+                {"id": "e2", "source": "n2", "target": "n3",
+                 "label": "collects", "direction": one_way, "edge_type": "flow"},
+                {"id": "e3", "source": "n3", "target": "n4",
+                 "label": "informs", "direction": one_way, "edge_type": "dependency"},
+                {"id": "e4", "source": "n4", "target": "n5",
+                 "label": "tested by", "direction": one_way, "edge_type": "relationship"},
+                {"id": "e5", "source": "n5", "target": "n2",
+                 "label": "refines", "direction": one_way, "edge_type": "note"},
+                {"id": "e6", "source": "n4", "target": "n6",
+                 "label": "supports", "direction": one_way, "edge_type": "flow"},
             ],
         }
         self.scene.load_dict(data)
         self._dirty = False
         QTimer.singleShot(120, self._fit_view)
         self._update_status()
-
     def closeEvent(self, event):
         if self._dirty:
             r = QMessageBox.question(

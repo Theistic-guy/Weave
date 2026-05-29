@@ -106,14 +106,27 @@ class Sidebar(QWidget):
         self.scene = scene
         self._node = None
         self._edge = None
-        self.setFixedWidth(290)
+        self._expanded_width = 290
+        self._collapsed_width = 32
+        self._collapsed = False
+        self.setFixedWidth(self._expanded_width)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        self.header_wrap = QFrame()
+        header_lay = QHBoxLayout(self.header_wrap)
+        header_lay.setContentsMargins(0, 0, 0, 0)
+        header_lay.setSpacing(0)
         self.header = QLabel("Properties")
-        root.addWidget(self.header)
+        self.collapse_btn = QPushButton(">")
+        self.collapse_btn.setFixedSize(self._collapsed_width, 42)
+        self.collapse_btn.setToolTip("Collapse inspector")
+        self.collapse_btn.clicked.connect(self.toggle_collapsed)
+        header_lay.addWidget(self.header, 1)
+        header_lay.addWidget(self.collapse_btn)
+        root.addWidget(self.header_wrap)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -132,15 +145,36 @@ class Sidebar(QWidget):
     def apply_style(self):
         sf = config.SETTINGS["sidebar_font_size"]
         self.setStyleSheet(f"background:{gc('BG_PANEL')};")
+        self.header_wrap.setStyleSheet(
+            f"QFrame {{ background:{gc('BG_DARK')};"
+            f" border-bottom:1px solid {gc('BORDER')}; }}")
         self.header.setStyleSheet(
             f"QLabel {{ background:{gc('BG_DARK')}; color:{gc('TEXT_PRIMARY')};"
             f" font-size:{sf+3}px; font-weight:bold;"
-            f" padding:14px 16px; border-bottom:1px solid {gc('BORDER')}; }}")
+            f" padding:14px 16px; border:none; }}")
+        self.collapse_btn.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{gc('TEXT_MUTED')};"
+            f" border:none; font-size:{sf+4}px; font-weight:bold; }}"
+            f" QPushButton:hover {{ background:{gc('BG_CARD')};"
+            f" color:{gc('TEXT_PRIMARY')}; }}")
         self.scroll.setStyleSheet(
             f"QScrollArea {{ background:transparent; border:none; }}"
             f" QScrollBar:vertical {{ background:{gc('BG_DARK')}; width:6px; border-radius:3px; }}"
             f" QScrollBar::handle:vertical {{ background:{gc('BORDER')}; border-radius:3px; min-height:20px; }}")
         self.content.setStyleSheet(f"background:{gc('BG_PANEL')};")
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed):
+        self._collapsed = collapsed
+        self.header.setVisible(not collapsed)
+        self.scroll.setVisible(not collapsed)
+        self.collapse_btn.setText("<" if collapsed else ">")
+        self.collapse_btn.setToolTip(
+            "Expand inspector" if collapsed else "Collapse inspector")
+        self.setFixedWidth(
+            self._collapsed_width if collapsed else self._expanded_width)
 
     def _clear(self):
         while self.cl.count():
