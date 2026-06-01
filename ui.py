@@ -233,6 +233,8 @@ class Sidebar(QWidget):
 
     def show_empty(self):
         self._node = self._edge = self._group = None
+        self._label_edit = None
+        self._edge_label_edit = None
         self._clear()
         self.header.setText("Properties")
         sf  = config.SETTINGS["sidebar_font_size"]
@@ -252,10 +254,7 @@ class Sidebar(QWidget):
         self._label_edit = None
         self._build_node_ui(node)
         self.cl.addStretch()
-        # Auto-focus label field so Tab immediately starts navigating
-        if self._label_edit:
-            self._label_edit.setFocus()
-            self._label_edit.selectAll()
+        
 
     def show_edge(self, edge):
         self._edge = edge; self._node = None; self._group = None
@@ -542,7 +541,9 @@ class Sidebar(QWidget):
         self.cl.addWidget(cr)
 
         self._section("Label")
-        le = QLineEdit(edge.label); le.setStyleSheet(_inp_ss())
+        le = QLineEdit(edge.label)
+        self._edge_label_edit = le
+        le.setStyleSheet(_inp_ss())
         le.editingFinished.connect(
             lambda: (edge.set_label(le.text()), self.scene.graph_changed.emit()))
         self.cl.addWidget(le)
@@ -556,6 +557,18 @@ class Sidebar(QWidget):
         db = QPushButton("🗑  Delete Edge"); db.setStyleSheet(_btn_ss(gc("ACCENT2")))
         db.clicked.connect(lambda: (self.scene.delete_edge(edge), self.show_empty()))
         self.cl.addWidget(db)
+
+    def focus_node_label(self):
+        if getattr(self, "_label_edit", None):
+            self._label_edit.setFocus()
+            self._label_edit.selectAll()
+
+    def focus_edge_label(self):
+        
+        print("widget =", getattr(self, "_edge_label_edit", None))
+        if getattr(self, "_edge_label_edit", None):
+            self._edge_label_edit.setFocus()
+            self._edge_label_edit.selectAll()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

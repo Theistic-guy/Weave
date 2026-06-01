@@ -38,6 +38,8 @@ class EdgeItem(QGraphicsPathItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable)
 
         self._label_item = QGraphicsTextItem("", self)
+        self._label_item.setAcceptedMouseButtons(Qt.NoButton)
+        self._label_item.setFlag(QGraphicsItem.ItemIsSelectable, False)
         self._label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
         self._refresh_label_text()
 
@@ -118,8 +120,11 @@ class EdgeItem(QGraphicsPathItem):
             2.0 if self.isSelected() else 1.2,
             qt_style,
         )
-        self.setPen(pen)
-        super().paint(painter, option, widget)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        # self.setPen(pen)
+        painter.drawPath(self.path())
+        # super().paint(painter, option, widget)
 
     def to_dict(self):
         return {
@@ -905,18 +910,42 @@ class GraphScene(QGraphicsScene):
                     break
                 elif isinstance(i, QGraphicsTextItem):
                     p = i.parentItem()
-                    if isinstance(p, (NodeItem, EdgeItem, CanvasTextItem)):
+
+                    if isinstance(p, EdgeItem):
+
+                        self.clearSelection()
+                        p.setSelected(True)
+
+                        self.edge_selected.emit(p)
+                        self.node_selected.emit(None)
+                        self.group_selected.emit(None)
+
+                        event.accept()
+                        return
+
+                    elif isinstance(p, (NodeItem, CanvasTextItem)):
                         clicked = p
                         break
             if isinstance(clicked, NodeItem):
+                self.clearSelection()
+                clicked.setSelected(True)
+
                 self.node_selected.emit(clicked)
                 self.edge_selected.emit(None)
                 self.group_selected.emit(None)
+
             elif isinstance(clicked, EdgeItem):
+                self.clearSelection()
+                clicked.setSelected(True)
+                print("BEFORE SUPER:", self.selectedItems())
                 self.edge_selected.emit(clicked)
                 self.node_selected.emit(None)
                 self.group_selected.emit(None)
+
             elif isinstance(clicked, NodeGroup):
+                self.clearSelection()
+                clicked.setSelected(True)
+
                 self.group_selected.emit(clicked)
                 self.node_selected.emit(None)
                 self.edge_selected.emit(None)
@@ -924,7 +953,9 @@ class GraphScene(QGraphicsScene):
                 self.node_selected.emit(None)
                 self.edge_selected.emit(None)
                 self.group_selected.emit(None)
+        print("Pre SUPER:", self.selectedItems())
         super().mousePressEvent(event)
+        print("POST SUPER:", self.selectedItems())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1001,6 +1032,28 @@ class CanvasView(QGraphicsView):
 
     # ── Keyboard ─────────────────────────────────────────────────────────────
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Tab:
+            
+            mw = self.window()
+
+            if hasattr(mw, "sidebar"):
+
+                selected = self.scene().selectedItems()
+                
+
+                if len(selected) == 1:
+
+                    item = selected[0]
+
+                    if isinstance(item, NodeItem):
+                        mw.sidebar.focus_node_label()
+                        event.accept()
+                        return
+
+                    if isinstance(item, EdgeItem):
+                        mw.sidebar.focus_edge_label()
+                        event.accept()
+                        return
         if event.key() == Qt.Key_Space and not event.isAutoRepeat():
             self._space_held = True
             self.setDragMode(QGraphicsView.NoDrag)
@@ -1399,3 +1452,5 @@ class CanvasView(QGraphicsView):
                 f" QMenu::item {{ padding:6px 20px; border-radius:4px; }}"
                 f" QMenu::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
                 f" QMenu::separator {{ background:{gc('BORDER')}; height:1px; margin:4px 8px; }}")
+    def focusNextPrevChild(self, next):
+        return False
