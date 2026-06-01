@@ -134,7 +134,9 @@ class EdgeItem(QGraphicsPathItem):
 # ─────────────────────────────────────────────────────────────────────────────
 class NodeItem(QGraphicsItem):
     def __init__(self, node_id=None, label="Node", x=0, y=0,
-                 node_type="default", color=None, properties=None):
+                 node_type="default", color=None, properties=None,
+                 notes="", sticky_text="", sticky_visible=False,
+                 sticky_dock="right"):
         super().__init__()
         self.node_id    = node_id or new_id()
         self.label      = label
@@ -142,6 +144,10 @@ class NodeItem(QGraphicsItem):
         self.color      = color or config.NODE_TYPE_COLORS.get(
             node_type, config.NODE_TYPE_COLORS.get("default", "#888888"))
         self.properties = properties if properties is not None else {}
+        self.notes      = notes
+        self.sticky_text = sticky_text
+        self.sticky_visible = sticky_visible
+        self.sticky_dock = sticky_dock
         self.edges      = []
         self.radius     = 14
 
@@ -155,6 +161,11 @@ class NodeItem(QGraphicsItem):
 
         self._text = QGraphicsTextItem("", self)
         self._text.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self._sticky_item = QGraphicsTextItem("", self)
+        self._sticky_item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self._sticky_item.setAcceptedMouseButtons(Qt.NoButton)
+        self._sticky_item.setTextInteractionFlags(Qt.NoTextInteraction)
+        self._sticky_item.setZValue(-1)
         self._refresh_text()
 
     def _inject_schema(self):
@@ -172,6 +183,43 @@ class NodeItem(QGraphicsItem):
         self._text.setDefaultTextColor(QColor(self.color))
         br = self._text.boundingRect()
         self._text.setPos(self.radius + 5, -br.height() / 2)
+        self._refresh_sticky_text()
+
+    def _refresh_sticky_text(self):
+        text = self.sticky_text.strip()
+        self._sticky_item.setVisible(bool(text and self.sticky_visible))
+        self._sticky_item.setPlainText(text)
+        self._sticky_item.setTextWidth(180)
+        self._sticky_item.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
+        self._sticky_item.setDefaultTextColor(QColor(self.color))
+
+        br = self._sticky_item.boundingRect()
+        gap = 10
+        dock = self.sticky_dock
+        if dock == "left":
+            pos = QPointF(-self.radius - gap - br.width(), -br.height() / 2)
+        elif dock == "above":
+            pos = QPointF(-br.width() / 2, -self.radius - gap - br.height())
+        elif dock == "below":
+            pos = QPointF(-br.width() / 2, self.radius + gap)
+        else:
+            pos = QPointF(self.radius + gap, -br.height() / 2)
+        self._sticky_item.setPos(pos)
+
+    def set_notes(self, text):
+        self.notes = text
+
+    def set_sticky_text(self, text):
+        self.sticky_text = text
+        self._refresh_sticky_text()
+
+    def set_sticky_visible(self, visible):
+        self.sticky_visible = visible
+        self._refresh_sticky_text()
+
+    def set_sticky_dock(self, dock):
+        self.sticky_dock = dock
+        self._refresh_sticky_text()
 
     def boundingRect(self):
         p = 5
@@ -233,6 +281,10 @@ class NodeItem(QGraphicsItem):
             "node_type":  self.node_type,
             "color":      self.color,
             "properties": dict(self.properties),
+            "notes":      self.notes,
+            "sticky_text": self.sticky_text,
+            "sticky_visible": self.sticky_visible,
+            "sticky_dock": self.sticky_dock,
         }
 
 
@@ -303,12 +355,16 @@ class GraphScene(QGraphicsScene):
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
     def add_node(self, label="Node", x=0, y=0, node_type=None,
-                 color=None, properties=None, node_id=None):
+                 color=None, properties=None, node_id=None,
+                 notes="", sticky_text="", sticky_visible=False,
+                 sticky_dock="right"):
         nt = node_type or config.SETTINGS["default_node_type"]
         if nt not in config.NODE_TYPE_COLORS:
             nt = next(iter(config.NODE_TYPE_COLORS), "default")
         n = NodeItem(node_id=node_id, label=label, x=x, y=y,
-                     node_type=nt, color=color, properties=properties)
+                     node_type=nt, color=color, properties=properties,
+                     notes=notes, sticky_text=sticky_text,
+                     sticky_visible=sticky_visible, sticky_dock=sticky_dock)
         self.nodes[n.node_id] = n
         self.addItem(n)
         self.graph_changed.emit()
@@ -395,6 +451,10 @@ class GraphScene(QGraphicsScene):
                 label=nd["label"], x=nd["x"], y=nd["y"],
                 node_type=nd.get("node_type"), color=nd.get("color"),
                 properties=nd.get("properties", {}), node_id=nd["id"],
+                notes=nd.get("notes", ""),
+                sticky_text=nd.get("sticky_text", ""),
+                sticky_visible=nd.get("sticky_visible", False),
+                sticky_dock=nd.get("sticky_dock", "right"),
             )
         for ed in data.get("edges", []):
             s = self.nodes.get(ed["source"])
@@ -642,6 +702,10 @@ class CanvasView(QGraphicsView):
                 color=nd.get("color"),
                 properties=copy.deepcopy(nd.get("properties", {})),
                 node_id=new_id(),
+                notes=nd.get("notes", ""),
+                sticky_text=nd.get("sticky_text", ""),
+                sticky_visible=nd.get("sticky_visible", False),
+                sticky_dock=nd.get("sticky_dock", "right"),
             )
             id_map[nd["id"]] = new_node
             new_node.setSelected(True)

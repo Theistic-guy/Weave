@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
-    QMessageBox, QTabWidget, QInputDialog, QSizePolicy,
+    QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
@@ -24,6 +24,13 @@ def _inp_ss():
             f" border:1px solid {gc('BORDER')}; border-radius:6px;"
             f" padding:5px 9px; font-size:{sf}px; }}"
             f" QLineEdit:focus {{ border-color:{gc('ACCENT')}; }}")
+
+def _textedit_ss():
+    sf = config.SETTINGS["sidebar_font_size"]
+    return (f"QTextEdit {{ background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')};"
+            f" border:1px solid {gc('BORDER')}; border-radius:6px;"
+            f" padding:6px 8px; font-size:{sf}px; }}"
+            f" QTextEdit:focus {{ border-color:{gc('ACCENT')}; }}")
 
 def _combo_ss():
     sf = config.SETTINGS["sidebar_font_size"]
@@ -109,6 +116,7 @@ class Sidebar(QWidget):
         self._expanded_width = 290
         self._collapsed_width = 32
         self._collapsed = False
+        self._section_collapsed = {"sticky": False, "notes": False}
         self.setFixedWidth(self._expanded_width)
 
         root = QVBoxLayout(self)
@@ -189,6 +197,37 @@ class Sidebar(QWidget):
             f"color:{gc('TEXT_MUTED')}; font-size:{sf-3}px; font-weight:bold;"
             f" letter-spacing:1.5px; padding:6px 0 2px 0; background:transparent;")
         self.cl.addWidget(lbl)
+
+    def _collapsible_section(self, key, title):
+        collapsed = self._section_collapsed.get(key, False)
+        head = QFrame()
+        head.setStyleSheet("background:transparent;")
+        lay = QHBoxLayout(head)
+        lay.setContentsMargins(0, 8, 0, 2)
+        lay.setSpacing(6)
+
+        sf = config.SETTINGS["sidebar_font_size"]
+        lbl = QLabel(title.upper())
+        lbl.setStyleSheet(
+            f"color:{gc('TEXT_MUTED')}; font-size:{sf-3}px; font-weight:bold;"
+            f" letter-spacing:1.5px; background:transparent;")
+        btn = QPushButton("+" if collapsed else "-")
+        btn.setFixedSize(22, 22)
+        btn.setStyleSheet(
+            f"QPushButton {{ background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')};"
+            f" border:1px solid {gc('BORDER')}; border-radius:4px;"
+            f" font-weight:bold; }}"
+            f" QPushButton:hover {{ background:{gc('ACCENT')}; color:white; }}")
+        def _toggle():
+            self._section_collapsed[key] = not self._section_collapsed.get(key, False)
+            if self._node:
+                self.show_node(self._node)
+        btn.clicked.connect(_toggle)
+        lay.addWidget(lbl)
+        lay.addStretch()
+        lay.addWidget(btn)
+        self.cl.addWidget(head)
+        return not collapsed
 
     def show_empty(self):
         self._node = self._edge = None
@@ -315,6 +354,59 @@ class Sidebar(QWidget):
                     f" border:1px solid {gc('BORDER')};")
                 self.cl.addWidget(el)
 
+        if self._collapsible_section("sticky", "Sticky Text"):
+            show = QCheckBox("Show on canvas")
+            show.setChecked(node.sticky_visible)
+            show.setStyleSheet(
+                f"QCheckBox {{ color:{gc('TEXT_PRIMARY')}; background:transparent;"
+                f" font-size:{sf}px; }}"
+                f" QCheckBox::indicator {{ width:14px; height:14px; }}")
+            def _toggle_sticky(v, n=node):
+                n.set_sticky_visible(bool(v))
+                self.scene.graph_changed.emit()
+            show.stateChanged.connect(_toggle_sticky)
+            self.cl.addWidget(show)
+
+            dock = QComboBox()
+            dock_map = {
+                "Dock Left": "left",
+                "Dock Right": "right",
+                "Dock Above": "above",
+                "Dock Below": "below",
+            }
+            dock.addItems(list(dock_map.keys()))
+            current = next((label for label, value in dock_map.items()
+                            if value == node.sticky_dock), "Dock Right")
+            dock.setCurrentText(current)
+            dock.setStyleSheet(_combo_ss())
+            def _dock_changed(label, n=node):
+                n.set_sticky_dock(dock_map.get(label, "right"))
+                self.scene.graph_changed.emit()
+            dock.currentTextChanged.connect(_dock_changed)
+            self.cl.addWidget(dock)
+
+            sticky_edit = QTextEdit()
+            sticky_edit.setPlaceholderText("Text to float near this node")
+            sticky_edit.setPlainText(node.sticky_text)
+            sticky_edit.setFixedHeight(84)
+            sticky_edit.setStyleSheet(_textedit_ss())
+            def _sticky_changed(n=node, edit=sticky_edit):
+                n.set_sticky_text(edit.toPlainText())
+                self.scene.graph_changed.emit()
+            sticky_edit.textChanged.connect(_sticky_changed)
+            self.cl.addWidget(sticky_edit)
+
+        if self._collapsible_section("notes", "Notes"):
+            notes = QTextEdit()
+            notes.setPlaceholderText("Private notes for this node")
+            notes.setPlainText(node.notes)
+            notes.setFixedHeight(110)
+            notes.setStyleSheet(_textedit_ss())
+            def _notes_changed(n=node, edit=notes):
+                n.set_notes(edit.toPlainText())
+                self.scene.graph_changed.emit()
+            notes.textChanged.connect(_notes_changed)
+            self.cl.addWidget(notes)
         db = QPushButton("🗑  Delete Node"); db.setStyleSheet(_btn_ss(gc("ACCENT2")))
         db.clicked.connect(lambda: (self.scene.delete_node(node), self.show_empty()))
         self.cl.addWidget(db)
