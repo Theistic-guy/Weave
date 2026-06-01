@@ -4,8 +4,9 @@ canvas.py — GraphicsScene, NodeItem, EdgeItem, CanvasView
 import math, copy
 from PyQt5.QtWidgets import (
     QGraphicsScene, QGraphicsView, QGraphicsItem, QGraphicsTextItem,
-    QGraphicsPathItem, QInputDialog, QMenu, QColorDialog, QFrame
+    QGraphicsPathItem, QGraphicsRectItem, QInputDialog, QMenu, QColorDialog, QFrame
 )
+# QGraphicsRectItem kept — used for StickyOverlay background pill
 from PyQt5.QtCore import Qt, QPointF, QRectF, QLineF, pyqtSignal, QTimer
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath
 
@@ -17,8 +18,12 @@ from config import gc, qc, new_id
 #  EdgeItem
 # ─────────────────────────────────────────────────────────────────────────────
 class EdgeItem(QGraphicsPathItem):
+    # Valid line styles
+    LINE_STYLES = {"solid": Qt.SolidLine, "dashed": Qt.DashLine, "dotted": Qt.DotLine}
+
     def __init__(self, src, tgt, label="", edge_id=None,
-                 direction="→", edge_type="relationship", color=None):
+                 direction="→", edge_type="relationship", color=None,
+                 line_style="solid"):
         super().__init__()
         self.edge_id     = edge_id or new_id()
         self.source_node = src
@@ -27,6 +32,7 @@ class EdgeItem(QGraphicsPathItem):
         self.direction   = direction
         self.edge_type   = edge_type
         self.color       = color or config.EDGE_TYPE_COLORS.get(edge_type, "#adb5bd")
+        self.line_style  = line_style if line_style in self.LINE_STYLES else "solid"
 
         self.setZValue(0)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -36,12 +42,8 @@ class EdgeItem(QGraphicsPathItem):
         self._refresh_label_text()
 
     def _refresh_label_text(self):
-        parts = []
-        if self.edge_type and self.edge_type != "relationship":
-            parts.append(f"[{self.edge_type}]")
-        if self.label:
-            parts.append(self.label)
-        self._label_item.setPlainText("  ".join(parts) if parts else "")
+        # Only show the user-provided label — no [type] prefix clutter
+        self._label_item.setPlainText(self.label)
         self._label_item.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
         self._label_item.setDefaultTextColor(QColor(self.color))
         self.update_path()
@@ -56,9 +58,13 @@ class EdgeItem(QGraphicsPathItem):
 
     def set_edge_type(self, t):
         self.edge_type = t
-        # sync colour to type default only if user hasn't overridden
         self.color = config.EDGE_TYPE_COLORS.get(t, self.color)
         self._refresh_label_text()
+
+    def set_line_style(self, style):
+        if style in self.LINE_STYLES:
+            self.line_style = style
+            self.update()
 
     def update_path(self):
         sp = self.source_node.scenePos()
@@ -106,27 +112,116 @@ class EdgeItem(QGraphicsPathItem):
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
-        style = (Qt.DashLine if self.edge_type == "dependency"
-                 else Qt.DotLine if self.edge_type == "note"
-                 else Qt.SolidLine)
+        qt_style = self.LINE_STYLES.get(self.line_style, Qt.SolidLine)
         pen = QPen(
             qc("ACCENT") if self.isSelected() else QColor(self.color),
             2.0 if self.isSelected() else 1.2,
-            style,
+            qt_style,
         )
         self.setPen(pen)
         super().paint(painter, option, widget)
 
     def to_dict(self):
         return {
-            "id":        self.edge_id,
-            "source":    self.source_node.node_id,
-            "target":    self.target_node.node_id,
-            "label":     self.label,
-            "direction": self.direction,
-            "edge_type": self.edge_type,
-            "color":     self.color,
+            "id":         self.edge_id,
+            "source":     self.source_node.node_id,
+            "target":     self.target_node.node_id,
+            "label":      self.label,
+            "direction":  self.direction,
+            "edge_type":  self.edge_type,
+            "color":      self.color,
+            "line_style": self.line_style,
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  StickyOverlay — a pair of scene-level items (background + text) that shadow
+#  a NodeItem.  Living directly in the scene (not as children of the node)
+#  means their positions are plain scene coordinates, so zoom / pan can never
+#  corrupt the layout the way ItemIgnoresTransformations on a child can.
+# ─────────────────────────────────────────────────────────────────────────────
+class StickyOverlay:
+    """Owns a background rect and a text item, both added to the scene."""
+
+    GAP   = 14   # scene-unit gap between node edge and label box
+    PAD_X = 8
+    PAD_Y = 5
+    WIDTH = 180
+
+    def __init__(self, scene):
+        self._scene = scene
+
+        self._bg = QGraphicsRectItem()
+        self._bg.setAcceptedMouseButtons(Qt.NoButton)
+        self._bg.setZValue(10)
+        self._bg.setVisible(False)
+        scene.addItem(self._bg)
+
+        self._txt = QGraphicsTextItem()
+        self._txt.setAcceptedMouseButtons(Qt.NoButton)
+        self._txt.setTextInteractionFlags(Qt.NoTextInteraction)
+        self._txt.setTextWidth(self.WIDTH)
+        self._txt.setZValue(11)
+        self._txt.setVisible(False)
+        scene.addItem(self._txt)
+
+    def update(self, node):
+        """Recompute scene position + styling from *node* state."""
+        text = node.sticky_text.strip()
+        visible = bool(text and node.sticky_visible)
+        self._bg.setVisible(visible)
+        self._txt.setVisible(visible)
+        if not visible:
+            return
+
+        # ── Text styling ──────────────────────────────────────────────────────
+        self._txt.setPlainText(text)
+        self._txt.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
+        self._txt.setDefaultTextColor(QColor(node.color))
+
+        # ── Position in scene space ───────────────────────────────────────────
+        # node.scenePos() is the centre of the circle in scene coords
+        cx = node.scenePos().x()
+        cy = node.scenePos().y()
+        r  = node.radius
+        br = self._txt.boundingRect()   # text bounding rect in its own space
+        w  = br.width()
+        h  = br.height()
+        g  = self.GAP
+
+        dock = node.sticky_dock
+        if dock == "left":
+            tx = cx - r - g - w
+            ty = cy - h / 2
+        elif dock == "above":
+            tx = cx - w / 2
+            ty = cy - r - g - h
+        elif dock == "below":
+            tx = cx - w / 2
+            ty = cy + r + g
+        else:  # right (default)
+            tx = cx + r + g
+            ty = cy - h / 2
+
+        self._txt.setPos(tx, ty)
+
+        # ── Background pill ───────────────────────────────────────────────────
+        px, py = self.PAD_X, self.PAD_Y
+        bg_color = QColor(node.color)
+        bg_color.setAlpha(30)
+        border_color = QColor(node.color)
+        border_color.setAlpha(90)
+
+        self._bg.setRect(QRectF(tx - px, ty - py, w + px * 2, h + py * 2))
+        self._bg.setBrush(QBrush(bg_color))
+        self._bg.setPen(QPen(border_color, 1.0, Qt.DashLine))
+
+    def remove(self):
+        """Remove both items from the scene (call when node is deleted)."""
+        if self._bg.scene():
+            self._scene.removeItem(self._bg)
+        if self._txt.scene():
+            self._scene.removeItem(self._txt)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -145,82 +240,97 @@ class NodeItem(QGraphicsItem):
             node_type, config.NODE_TYPE_COLORS.get("default", "#888888"))
         self.properties = properties if properties is not None else {}
         self.notes      = notes
-        self.sticky_text = sticky_text
+        self.sticky_text    = sticky_text
         self.sticky_visible = sticky_visible
-        self.sticky_dock = sticky_dock
-        self.edges      = []
-        self.radius     = 14
+        self.sticky_dock    = sticky_dock
+        self.edges  = []
+        self.radius = 14
+
+        # StickyOverlay is created after the node is added to the scene
+        # (scene is not available in __init__).  GraphScene.add_node sets it.
+        self._sticky = None  # type: StickyOverlay | None
 
         self._inject_schema()
+
+
+        self._text = QGraphicsTextItem("", self)
+
+        # Debounce sticky overlay updates during drag — updating every pixel
+        # is expensive; 30ms after the last position change is imperceptible.
+        self._sticky_timer = QTimer()
+        self._sticky_timer.setSingleShot(True)
+        self._sticky_timer.setInterval(30)
+        self._sticky_timer.timeout.connect(self._refresh_sticky)
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setPos(x, y)
         self.setZValue(1)
-
-        self._text = QGraphicsTextItem("", self)
-        self._text.setFlag(QGraphicsItem.ItemIgnoresTransformations)
-        self._sticky_item = QGraphicsTextItem("", self)
-        self._sticky_item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
-        self._sticky_item.setAcceptedMouseButtons(Qt.NoButton)
-        self._sticky_item.setTextInteractionFlags(Qt.NoTextInteraction)
-        self._sticky_item.setZValue(-1)
         self._refresh_text()
 
+    # ── Schema / text ─────────────────────────────────────────────────────────
     def _inject_schema(self):
-        """Add any schema-defined keys that are missing (empty string default)."""
         expected = (config.PROPERTY_SCHEMA.get("__universal__", [])
                     + config.PROPERTY_SCHEMA.get(self.node_type, []))
         for k in expected:
             if k not in self.properties:
                 self.properties[k] = ""
 
-    def _refresh_text(self):
+    def _refresh_text(self, view_scale=1.0):
         self.prepareGeometryChange()
+        nominal_pt  = config.SETTINGS["ui_font_size"]
+        MIN_SCREEN_PX = 11
+        # Compute minimum scene-unit font size to stay ≥11px on screen
+        min_scene_pt = MIN_SCREEN_PX / max(view_scale, 0.001)
+        effective_pt = max(nominal_pt, min_scene_pt)
+
+        self._text.setVisible(True)
         self._text.setPlainText(self.label)
-        self._text.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"], QFont.Medium))
+        QFont("Segoe UI", max(1, int(round(effective_pt))), QFont.Medium)
         self._text.setDefaultTextColor(QColor(self.color))
         br = self._text.boundingRect()
         self._text.setPos(self.radius + 5, -br.height() / 2)
-        self._refresh_sticky_text()
+        self._refresh_sticky()
 
-    def _refresh_sticky_text(self):
-        text = self.sticky_text.strip()
-        self._sticky_item.setVisible(bool(text and self.sticky_visible))
-        self._sticky_item.setPlainText(text)
-        self._sticky_item.setTextWidth(180)
-        self._sticky_item.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
-        self._sticky_item.setDefaultTextColor(QColor(self.color))
+    def update_label_scale(self, view_scale: float):
+        """Called by CanvasView on zoom change — updates font size only, no geometry change."""
+        nominal_pt  = config.SETTINGS["ui_font_size"]
+        MIN_SCREEN_PX = 11
+        min_scene_pt = MIN_SCREEN_PX / max(view_scale, 0.001)
+        effective_pt = max(nominal_pt, min_scene_pt)
+        cur_font = self._text.font()
+        if abs(cur_font.pointSizeF() - effective_pt) > 0.5:
+            f = QFont(
+                "Segoe UI",
+                max(1, int(round(effective_pt))),
+                QFont.Medium
+            )
+            self._text.setFont(f)
+            br = self._text.boundingRect()
+            self._text.setPos(self.radius + 5, -br.height() / 2)
 
-        br = self._sticky_item.boundingRect()
-        gap = 10
-        dock = self.sticky_dock
-        if dock == "left":
-            pos = QPointF(-self.radius - gap - br.width(), -br.height() / 2)
-        elif dock == "above":
-            pos = QPointF(-br.width() / 2, -self.radius - gap - br.height())
-        elif dock == "below":
-            pos = QPointF(-br.width() / 2, self.radius + gap)
-        else:
-            pos = QPointF(self.radius + gap, -br.height() / 2)
-        self._sticky_item.setPos(pos)
+    def _refresh_sticky(self):
+        if self._sticky is not None:
+            self._sticky.update(self)
 
+    # ── Sticky setters (called from sidebar) ──────────────────────────────────
     def set_notes(self, text):
         self.notes = text
 
     def set_sticky_text(self, text):
         self.sticky_text = text
-        self._refresh_sticky_text()
+        self._refresh_sticky()
 
     def set_sticky_visible(self, visible):
         self.sticky_visible = visible
-        self._refresh_sticky_text()
+        self._refresh_sticky()
 
     def set_sticky_dock(self, dock):
         self.sticky_dock = dock
-        self._refresh_sticky_text()
+        self._refresh_sticky()
 
+    # ── Graphics ──────────────────────────────────────────────────────────────
     def boundingRect(self):
         p = 5
         return QRectF(-self.radius - p, -self.radius - p,
@@ -230,9 +340,22 @@ class NodeItem(QGraphicsItem):
         painter.setRenderHint(QPainter.Antialiasing)
         r   = self.radius
         col = qc("ACCENT") if self.isSelected() else QColor(self.color)
-        painter.setBrush(QBrush(col))
+
+        # Fade circle at very low zoom so the label (child QGraphicsTextItem) stays
+        # readable against the background even when the circle itself is tiny.
+        # We read zoom from the view transform — read-only, no item mutation.
+        view_scale = painter.worldTransform().m11()
+        node_alpha = min(255, int(view_scale * 255 * 2))
+        if node_alpha < 255:
+            draw_col = QColor(col)
+            draw_col.setAlpha(node_alpha)
+        else:
+            draw_col = col
+
+        painter.setBrush(QBrush(draw_col))
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(QPointF(0, 0), r, r)
+
         if self.isSelected():
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(col.lighter(150), 2))
@@ -240,20 +363,23 @@ class NodeItem(QGraphicsItem):
 
         filled = sum(1 for v in self.properties.values() if str(v).strip())
         if filled:
-            br = QRectF(r - 6, -r - 2, 12, 10)
+            badge = QRectF(r - 6, -r - 2, 12, 10)
             painter.setBrush(QBrush(QColor("#ff6584")))
             painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(br, 3, 3)
+            painter.drawRoundedRect(badge, 3, 3)
             painter.setPen(QPen(Qt.white))
             painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
-            painter.drawText(br, Qt.AlignCenter, str(filled))
+            painter.drawText(badge, Qt.AlignCenter, str(filled))
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
             for e in self.edges:
                 e.update_path()
+            # Debounce sticky overlay — don't recompute every drag pixel
+            self._sticky_timer.start()
         return super().itemChange(change, value)
 
+    # ── Edge book-keeping ─────────────────────────────────────────────────────
     def add_edge(self, e):
         if e not in self.edges:
             self.edges.append(e)
@@ -272,19 +398,184 @@ class NodeItem(QGraphicsItem):
             e.update_path()
         self.update()
 
+    # ── Serialisation ─────────────────────────────────────────────────────────
     def to_dict(self):
         return {
-            "id":         self.node_id,
-            "label":      self.label,
-            "x":          self.x(),
-            "y":          self.y(),
-            "node_type":  self.node_type,
-            "color":      self.color,
-            "properties": dict(self.properties),
-            "notes":      self.notes,
-            "sticky_text": self.sticky_text,
+            "id":             self.node_id,
+            "label":          self.label,
+            "x":              self.x(),
+            "y":              self.y(),
+            "node_type":      self.node_type,
+            "color":          self.color,
+            "properties":     dict(self.properties),
+            "notes":          self.notes,
+            "sticky_text":    self.sticky_text,
             "sticky_visible": self.sticky_visible,
-            "sticky_dock": self.sticky_dock,
+            "sticky_dock":    self.sticky_dock,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CanvasTextItem — free-floating, draggable text label for the canvas
+# ─────────────────────────────────────────────────────────────────────────────
+class CanvasTextItem(QGraphicsItem):
+    """A resizable, styled text block the user can place anywhere on the canvas.
+    Font, size and colour are independent of global settings — they are stored
+    per-item and survive theme / font-size changes.
+    """
+
+    def __init__(self, text="Text", x=0, y=0,
+                 color="#e8eaf6", font_size=18, bold=False, italic=False,
+                 item_id=None):
+        super().__init__()
+        self.item_id   = item_id or new_id()
+        self.text      = text
+        self.color     = color
+        self.font_size = font_size
+        self.bold      = bold
+        self.italic    = italic
+
+        self.setFlag(QGraphicsItem.ItemIsMovable)
+        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
+        self.setPos(x, y)
+        self.setZValue(0.5)          # between edges (0) and nodes (1)
+
+        self._txt = QGraphicsTextItem("", self)
+        self._refresh()
+
+    def _refresh(self):
+        self.prepareGeometryChange()
+        self._txt.setPlainText(self.text)
+        self._txt.setDefaultTextColor(QColor(self.color))
+        w = QFont.Bold if self.bold else QFont.Normal
+        f = QFont("Segoe UI", self.font_size, w)
+        f.setItalic(self.italic)
+        self._txt.setFont(f)
+        self._txt.setTextWidth(-1)   # natural width
+
+    def boundingRect(self):
+        br = self._txt.boundingRect()
+        pad = 6
+        return QRectF(-pad, -pad, br.width() + pad * 2, br.height() + pad * 2)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+        if self.isSelected():
+            pen = QPen(qc("ACCENT"), 1.5, Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(self.boundingRect(), 4, 4)
+        self._txt.setPos(6, 6)
+
+    def to_dict(self):
+        return {
+            "id":        self.item_id,
+            "text":      self.text,
+            "x":         self.x(),
+            "y":         self.y(),
+            "color":     self.color,
+            "font_size": self.font_size,
+            "bold":      self.bold,
+            "italic":    self.italic,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NodeGroup — a visual bounding-box grouping item
+# ─────────────────────────────────────────────────────────────────────────────
+class NodeGroup(QGraphicsItem):
+    """
+    Represents a named group of NodeItems.  Renders as a rounded translucent
+    rect with a title in the top-left corner.  Members move with the group
+    when the group itself is dragged.
+    """
+
+    CORNER_R = 12
+    PAD      = 24   # padding around member bounding-boxes
+
+    def __init__(self, group_id=None, name="Group", color=None, member_ids=None):
+        super().__init__()
+        self.group_id   = group_id or new_id()
+        self.name       = name
+        self.color      = color or "#6c63ff"
+        self.member_ids = list(member_ids or [])
+
+        self.setFlag(QGraphicsItem.ItemIsMovable)
+        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
+        self.setZValue(-0.5)   # behind nodes/edges, in front of grid
+
+        self._rect = QRectF(-60, -30, 120, 60)   # overwritten by fit_to_members
+
+    # ── Geometry ──────────────────────────────────────────────────────────────
+    def fit_to_members(self, members):
+        """Recompute position and size so the rect wraps all member nodes."""
+        if not members:
+            return
+        xs = [n.scenePos().x() for n in members]
+        ys = [n.scenePos().y() for n in members]
+        rs = [n.radius for n in members]
+        pad = self.PAD
+        min_x = min(x - r for x, r in zip(xs, rs)) - pad
+        min_y = min(y - r for y, r in zip(ys, rs)) - pad
+        max_x = max(x + r for x, r in zip(xs, rs)) + pad
+        max_y = max(y + r for y, r in zip(ys, rs)) + pad
+
+        self.prepareGeometryChange()
+        self.setPos(min_x, min_y)
+        self._rect = QRectF(0, 0, max_x - min_x, max_y - min_y)
+
+    def boundingRect(self):
+        return self._rect.adjusted(-2, -2, 2, 2)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+        col = QColor(self.color)
+
+        # Fill
+        fill = QColor(col)
+        fill.setAlpha(25 if self.isSelected() else 15)
+        painter.setBrush(QBrush(fill))
+
+        # Border
+        border = QColor(col)
+        border.setAlpha(160 if self.isSelected() else 80)
+        pen = QPen(border, 1.8 if self.isSelected() else 1.2, Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawRoundedRect(self._rect, self.CORNER_R, self.CORNER_R)
+
+        # Title
+        painter.setPen(QPen(border.lighter(130)))
+        f = QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1, QFont.Bold)
+        painter.setFont(f)
+        painter.drawText(
+            QRectF(self._rect.x() + 10, self._rect.y() + 6,
+                   self._rect.width() - 20, 20),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            self.name,
+        )
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
+            # When group is dragged, move all member nodes by the same delta
+            scene = self.scene()
+            if hasattr(scene, "_group_drag_delta"):
+                dx, dy = scene._group_drag_delta
+                for nid in self.member_ids:
+                    node = scene.nodes.get(nid)
+                    if node:
+                        node.setPos(node.pos() + QPointF(dx, dy))
+        return super().itemChange(change, value)
+
+    def to_dict(self):
+        return {
+            "id":      self.group_id,
+            "name":    self.name,
+            "color":   self.color,
+            "members": list(self.member_ids),
+            "x":       self.x(),
+            "y":       self.y(),
         }
 
 
@@ -292,22 +583,26 @@ class NodeItem(QGraphicsItem):
 #  GraphScene
 # ─────────────────────────────────────────────────────────────────────────────
 class GraphScene(QGraphicsScene):
-    node_selected = pyqtSignal(object)
-    edge_selected = pyqtSignal(object)
-    graph_changed = pyqtSignal()
+    node_selected  = pyqtSignal(object)
+    edge_selected  = pyqtSignal(object)
+    group_selected = pyqtSignal(object)
+    graph_changed  = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSceneRect(-100000, -100000, 200000, 200000)
         self.setBackgroundBrush(QBrush(qc("BG_DARK")))
-        self.nodes = {}
-        self.edges = {}
+        self.nodes  = {}
+        self.edges  = {}
+        self.texts  = {}
+        self.groups = {}          # group_id → NodeGroup
         self._connecting   = False
         self._conn_source  = None
         self._conn_line    = None
         self.layout_active = False
         self.layout_timer  = QTimer()
         self.layout_timer.timeout.connect(self._layout_step)
+        self._group_drag_prev = {}   # group_id → last QPointF position
 
     # ── Force layout ──────────────────────────────────────────────────────────
     def toggle_layout(self):
@@ -367,29 +662,35 @@ class GraphScene(QGraphicsScene):
                      sticky_visible=sticky_visible, sticky_dock=sticky_dock)
         self.nodes[n.node_id] = n
         self.addItem(n)
+        # StickyOverlay must be created AFTER addItem so the scene is available
+        n._sticky = StickyOverlay(self)
+        n._refresh_sticky()          # draw initial state
         self.graph_changed.emit()
         return n
 
     def delete_node(self, node):
         for e in list(node.edges):
             self.delete_edge(e)
+        if node._sticky is not None:
+            node._sticky.remove()
+            node._sticky = None
         self.nodes.pop(node.node_id, None)
         self.removeItem(node)
         self.graph_changed.emit()
 
     def add_edge(self, src, tgt, label="", edge_id=None,
-                 direction=None, edge_type=None, color=None):
+                 direction=None, edge_type=None, color=None, line_style="solid"):
         direction = direction or config.SETTINGS["default_direction"]
         edge_type = edge_type or config.SETTINGS["default_edge_type"]
         if edge_type not in config.EDGE_TYPE_COLORS:
             edge_type = next(iter(config.EDGE_TYPE_COLORS), "relationship")
-        # prevent exact duplicate
         for e in src.edges:
             if (e.source_node is src and e.target_node is tgt
                     and e.direction == direction):
                 return None
         e = EdgeItem(src, tgt, label=label, edge_id=edge_id,
-                     direction=direction, edge_type=edge_type, color=color)
+                     direction=direction, edge_type=edge_type, color=color,
+                     line_style=line_style)
         self.edges[e.edge_id] = e
         self.addItem(e)
         src.add_edge(e)
@@ -403,6 +704,63 @@ class GraphScene(QGraphicsScene):
         self.edges.pop(edge.edge_id, None)
         self.removeItem(edge)
         self.graph_changed.emit()
+
+    def add_text(self, text="Text", x=0, y=0, color=None,
+                 font_size=18, bold=False, italic=False, item_id=None):
+        col = color or gc("TEXT_PRIMARY")
+        t = CanvasTextItem(text=text, x=x, y=y, color=col,
+                           font_size=font_size, bold=bold, italic=italic,
+                           item_id=item_id)
+        self.texts[t.item_id] = t
+        self.addItem(t)
+        self.graph_changed.emit()
+        return t
+
+    def delete_text(self, item):
+        self.texts.pop(item.item_id, None)
+        self.removeItem(item)
+        self.graph_changed.emit()
+
+    # ── Group CRUD ────────────────────────────────────────────────────────────
+    def group_nodes(self, nodes, name="Group"):
+        """Create a group from a list of NodeItems."""
+        if len(nodes) < 2:
+            return None
+        g = NodeGroup(
+            name=name,
+            color=nodes[0].color,
+            member_ids=[n.node_id for n in nodes],
+        )
+        g.fit_to_members(nodes)
+        self.groups[g.group_id] = g
+        self.addItem(g)
+        self.graph_changed.emit()
+        return g
+
+    def ungroup(self, group):
+        """Remove a group without deleting its member nodes."""
+        self.groups.pop(group.group_id, None)
+        self.removeItem(group)
+        self.graph_changed.emit()
+
+    def get_node_group(self, node):
+        """Return the NodeGroup that contains node, or None."""
+        for g in self.groups.values():
+            if node.node_id in g.member_ids:
+                return g
+        return None
+
+    def clear_all(self):
+        """Remove all nodes (and their sticky overlays), edges, texts, groups, then clear."""
+        for node in list(self.nodes.values()):
+            if node._sticky is not None:
+                node._sticky.remove()
+                node._sticky = None
+        self.clear()
+        self.nodes.clear()
+        self.edges.clear()
+        self.texts.clear()
+        self.groups.clear()
 
     def start_connect(self, src):
         self._connecting  = True
@@ -419,24 +777,30 @@ class GraphScene(QGraphicsScene):
     # ── Serialise ─────────────────────────────────────────────────────────────
     def to_dict(self):
         return {
-            "schema": config.schema_block(),          # full type/settings state
+            "schema": config.schema_block(),
             "nodes":  [n.to_dict() for n in self.nodes.values()],
             "edges":  [e.to_dict() for e in self.edges.values()],
+            "texts":  [t.to_dict() for t in self.texts.values()],
+            "groups": [g.to_dict() for g in self.groups.values()],
         }
 
     def load_dict(self, data):
+        # Remove sticky overlays before scene.clear()
+        for node in list(self.nodes.values()):
+            if node._sticky is not None:
+                node._sticky.remove()
+                node._sticky = None
         self.clear()
         self.nodes.clear()
         self.edges.clear()
+        self.texts.clear()
+        self.groups.clear()
 
-        # Restore schema first so node/edge fallbacks use correct types
         if "schema" in data:
             config.restore_schema_block(data["schema"])
         elif "types" in data:
-            # backwards-compat with older save format
             config.restore_schema_block(data["types"])
 
-        # Ensure any node/edge types referenced in the file exist in the registry
         for nd in data.get("nodes", []):
             nt = nd.get("node_type", "default")
             if nt not in config.NODE_TYPE_COLORS:
@@ -467,13 +831,52 @@ class GraphScene(QGraphicsScene):
                     direction=ed.get("direction", "→"),
                     edge_type=ed.get("edge_type", "relationship"),
                     color=ed.get("color"),
+                    line_style=ed.get("line_style", "solid"),
                 )
+        for td in data.get("texts", []):
+            self.add_text(
+                text=td.get("text", ""),
+                x=td["x"], y=td["y"],
+                color=td.get("color"),
+                font_size=td.get("font_size", 18),
+                bold=td.get("bold", False),
+                italic=td.get("italic", False),
+                item_id=td.get("id"),
+            )
+        for gd in data.get("groups", []):
+            members = [self.nodes[mid] for mid in gd.get("members", [])
+                       if mid in self.nodes]
+            if len(members) >= 2:
+                g = NodeGroup(
+                    group_id=gd.get("id"),
+                    name=gd.get("name", "Group"),
+                    color=gd.get("color"),
+                    member_ids=gd.get("members", []),
+                )
+                g.fit_to_members(members)
+                self.groups[g.group_id] = g
+                self.addItem(g)
 
     # ── Mouse ─────────────────────────────────────────────────────────────────
     def mouseMoveEvent(self, event):
         if self._connecting and self._conn_line and self._conn_source:
             self._conn_line.setLine(
                 QLineF(self._conn_source.scenePos(), event.scenePos()))
+        # Track group drag delta so NodeGroup.itemChange can move members
+        for gid, g in self.groups.items():
+            prev = self._group_drag_prev.get(gid)
+            cur  = g.pos()
+            if prev is not None and g.isSelected():
+                dx = cur.x() - prev.x()
+                dy = cur.y() - prev.y()
+                if dx != 0 or dy != 0:
+                    self._group_drag_delta = (dx, dy)
+                    for nid in g.member_ids:
+                        node = self.nodes.get(nid)
+                        if node:
+                            node.setPos(node.pos() + QPointF(dx, dy))
+                    self._group_drag_delta = (0, 0)
+            self._group_drag_prev[gid] = QPointF(cur)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -497,23 +900,30 @@ class GraphScene(QGraphicsScene):
             items   = self.items(event.scenePos())
             clicked = None
             for i in items:
-                if isinstance(i, (NodeItem, EdgeItem)):
+                if isinstance(i, (NodeItem, EdgeItem, CanvasTextItem, NodeGroup)):
                     clicked = i
                     break
                 elif isinstance(i, QGraphicsTextItem):
                     p = i.parentItem()
-                    if isinstance(p, (NodeItem, EdgeItem)):
+                    if isinstance(p, (NodeItem, EdgeItem, CanvasTextItem)):
                         clicked = p
                         break
             if isinstance(clicked, NodeItem):
                 self.node_selected.emit(clicked)
                 self.edge_selected.emit(None)
+                self.group_selected.emit(None)
             elif isinstance(clicked, EdgeItem):
                 self.edge_selected.emit(clicked)
                 self.node_selected.emit(None)
+                self.group_selected.emit(None)
+            elif isinstance(clicked, NodeGroup):
+                self.group_selected.emit(clicked)
+                self.node_selected.emit(None)
+                self.edge_selected.emit(None)
             else:
                 self.node_selected.emit(None)
                 self.edge_selected.emit(None)
+                self.group_selected.emit(None)
         super().mousePressEvent(event)
 
 
@@ -540,8 +950,8 @@ class CanvasView(QGraphicsView):
         self._pan_start   = None
         self._space_held  = False
         self._scale       = 1.0
-        # clipboard stores {nodes: [...], edges: [...]} dicts
-        self._clipboard   = {"nodes": [], "edges": []}
+        # clipboard stores {nodes: [...], edges: [...], texts: [...]} dicts
+        self._clipboard   = {"nodes": [], "edges": [], "texts": []}
 
     # ── Grid ─────────────────────────────────────────────────────────────────
     def drawBackground(self, painter, rect):
@@ -573,6 +983,7 @@ class CanvasView(QGraphicsView):
         self._scale = new_scale
         self.scale(factor, factor)
         self.zoom_changed.emit(self._scale)
+        self._update_node_label_scales()
 
     def _set_zoom(self, z):
         z      = max(self.MIN_ZOOM, min(self.MAX_ZOOM, z))
@@ -580,6 +991,13 @@ class CanvasView(QGraphicsView):
         self._scale = z
         self.scale(factor, factor)
         self.zoom_changed.emit(self._scale)
+        self._update_node_label_scales()
+
+    def _update_node_label_scales(self):
+        """Push current view scale to all node labels — zoom-aware font sizing."""
+        s = self._scale
+        for node in self.scene().nodes.values():
+            node.update_label_scale(s)
 
     # ── Keyboard ─────────────────────────────────────────────────────────────
     def keyPressEvent(self, event):
@@ -593,6 +1011,25 @@ class CanvasView(QGraphicsView):
                     self.scene().delete_node(item)
                 elif isinstance(item, EdgeItem):
                     self.scene().delete_edge(item)
+                elif isinstance(item, CanvasTextItem):
+                    self.scene().delete_text(item)
+                elif isinstance(item, NodeGroup):
+                    self.scene().ungroup(item)
+        elif event.key() == Qt.Key_G and event.modifiers() & Qt.ControlModifier:
+            if event.modifiers() & Qt.ShiftModifier:
+                # Ctrl+Shift+G — ungroup selected groups
+                for item in list(self.scene().selectedItems()):
+                    if isinstance(item, NodeGroup):
+                        self.scene().ungroup(item)
+            else:
+                # Ctrl+G — group selected nodes
+                sel_nodes = [i for i in self.scene().selectedItems()
+                             if isinstance(i, NodeItem)]
+                if len(sel_nodes) >= 2:
+                    name, ok = QInputDialog.getText(
+                        self, "Group Name", "Name for this group:", text="Group")
+                    if ok:
+                        self.scene().group_nodes(sel_nodes, name=name or "Group")
         elif event.key() == Qt.Key_Escape:
             self.scene().abort_connect()
             self._space_held = False
@@ -641,63 +1078,63 @@ class CanvasView(QGraphicsView):
 
     # ── Copy / Paste ──────────────────────────────────────────────────────────
     def _copy_selected(self):
-        """
-        Copy selected nodes AND any edges whose both endpoints are selected.
-        Clipboard stores serialised dicts so nothing holds live references.
-        """
+        """Copy selected nodes+edges+texts. Returns True if anything was copied."""
         selected_nodes = {
             n.node_id: n
             for n in self.scene().selectedItems()
             if isinstance(n, NodeItem)
         }
-        if not selected_nodes:
-            return
+        selected_texts = [
+            t for t in self.scene().selectedItems()
+            if isinstance(t, CanvasTextItem)
+        ]
+        if not selected_nodes and not selected_texts:
+            return False
 
         node_dicts = [n.to_dict() for n in selected_nodes.values()]
-
-        # Only copy edges where BOTH source and target are in the selection
         edge_dicts = [
             e.to_dict()
             for e in self.scene().edges.values()
             if (e.source_node.node_id in selected_nodes
                 and e.target_node.node_id in selected_nodes)
         ]
+        text_dicts = [t.to_dict() for t in selected_texts]
 
-        self._clipboard = {"nodes": node_dicts, "edges": edge_dicts}
+        self._clipboard = {"nodes": node_dicts, "edges": edge_dicts,
+                           "texts": text_dicts}
+        return True
 
     def _paste(self, scene_pos=None):
-        """
-        Paste clipboard at scene_pos (right-click location) or at the current
-        viewport centre if called from Ctrl+V.  Nodes are placed so their
-        centroid lands at the target position, preserving relative layout.
-        Edges between copied nodes are also recreated.
-        """
-        if not self._clipboard.get("nodes"):
+        """Paste clipboard at scene_pos, or viewport centre for Ctrl+V."""
+        if not self._clipboard.get("nodes") and not self._clipboard.get("texts"):
             return
 
-        node_dicts = self._clipboard["nodes"]
-        edge_dicts = self._clipboard["edges"]
+        node_dicts = self._clipboard.get("nodes", [])
+        edge_dicts = self._clipboard.get("edges", [])
+        text_dicts = self._clipboard.get("texts", [])
 
-        # Compute centroid of the original positions
-        cx = sum(nd["x"] for nd in node_dicts) / len(node_dicts)
-        cy = sum(nd["y"] for nd in node_dicts) / len(node_dicts)
+        # Compute centroid across all copied items
+        all_xs = [nd["x"] for nd in node_dicts] + [td["x"] for td in text_dicts]
+        all_ys = [nd["y"] for nd in node_dicts] + [td["y"] for td in text_dicts]
+        if not all_xs:
+            return
+        cx = sum(all_xs) / len(all_xs)
+        cy = sum(all_ys) / len(all_ys)
 
-        # Target: scene_pos if given, else centre of current viewport
         if scene_pos is None:
-            vp_center   = self.viewport().rect().center()
-            scene_pos   = self.mapToScene(vp_center)
+            vp_center = self.viewport().rect().center()
+            scene_pos = self.mapToScene(vp_center)
 
         dx = scene_pos.x() - cx
         dy = scene_pos.y() - cy
 
-        # Paste nodes, building old_id → new_node map for edge rewiring
-        id_map = {}   # old node_id -> new NodeItem
         self.scene().clearSelection()
+
+        id_map = {}
         for nd in node_dicts:
             new_node = self.scene().add_node(
                 label=nd["label"],
-                x=nd["x"] + dx,
-                y=nd["y"] + dy,
+                x=nd["x"] + dx, y=nd["y"] + dy,
                 node_type=nd.get("node_type"),
                 color=nd.get("color"),
                 properties=copy.deepcopy(nd.get("properties", {})),
@@ -710,7 +1147,6 @@ class CanvasView(QGraphicsView):
             id_map[nd["id"]] = new_node
             new_node.setSelected(True)
 
-        # Recreate edges between the pasted nodes
         for ed in edge_dicts:
             src = id_map.get(ed["source"])
             tgt = id_map.get(ed["target"])
@@ -723,47 +1159,169 @@ class CanvasView(QGraphicsView):
                     color=ed.get("color"),
                 )
 
+        for td in text_dicts:
+            new_t = self.scene().add_text(
+                text=td.get("text", ""),
+                x=td["x"] + dx, y=td["y"] + dy,
+                color=td.get("color"),
+                font_size=td.get("font_size", 18),
+                bold=td.get("bold", False),
+                italic=td.get("italic", False),
+                item_id=new_id(),
+            )
+            new_t.setSelected(True)
+
     # ── Context menu ──────────────────────────────────────────────────────────
     def contextMenuEvent(self, event):
         scene_pos = self.mapToScene(event.pos())
         items     = self.scene().items(scene_pos)
         node  = next((i for i in items if isinstance(i, NodeItem)), None)
         edge  = next((i for i in items if isinstance(i, EdgeItem)), None)
-        menu  = QMenu(self)
+        ctext = next((i for i in items if isinstance(i, CanvasTextItem)), None)
+        group = next((i for i in items if isinstance(i, NodeGroup)), None)
+        if not ctext:
+            for i in items:
+                if isinstance(i, QGraphicsTextItem) and isinstance(i.parentItem(), CanvasTextItem):
+                    ctext = i.parentItem()
+                    break
+        # Nodes take priority over groups
+        if node:
+            group = None
+
+        menu = QMenu(self)
         menu.setStyleSheet(self._menu_style())
 
+        # ── Node context ──────────────────────────────────────────────────────
         if node:
-            a_conn = menu.addAction("🔗  Connect from here")
-            a_edit = menu.addAction("✏️  Rename")
-            a_col  = menu.addAction("🎨  Change colour")
-            menu.addSeparator()
-            a_copy = menu.addAction("📋  Copy  (Ctrl+C)")
-            menu.addSeparator()
-            a_del  = menu.addAction("🗑️  Delete node")
+            if not node.isSelected():
+                self.scene().clearSelection()
+                node.setSelected(True)
+            n_selected = [n for n in self.scene().selectedItems()
+                          if isinstance(n, NodeItem)]
+            if len(n_selected) > 1:
+                a_group = menu.addAction(f"⬡  Group {len(n_selected)} nodes  (Ctrl+G)")
+                a_copy  = menu.addAction(f"📋  Copy {len(n_selected)} nodes  (Ctrl+C)")
+                menu.addSeparator()
+                a_del   = menu.addAction(f"🗑️  Delete {len(n_selected)} nodes")
+            else:
+                a_conn  = menu.addAction("🔗  Connect from here")
+                a_edit  = menu.addAction("✏️  Rename")
+                a_col   = menu.addAction("🎨  Change colour")
+                menu.addSeparator()
+                a_copy  = menu.addAction("📋  Copy  (Ctrl+C)")
+                menu.addSeparator()
+                a_del   = menu.addAction("🗑️  Delete node")
+                a_group = None; a_conn  = locals().get("a_conn")
+
             ch = menu.exec_(event.globalPos())
-            if ch == a_conn:
+            if ch is None:
+                return
+            if ch == locals().get("a_group"):
+                name, ok = QInputDialog.getText(
+                    self, "Group Name", "Name:", text="Group")
+                if ok:
+                    self.scene().group_nodes(n_selected, name=name or "Group")
+            elif ch == locals().get("a_conn"):
                 self.scene().start_connect(node)
-            elif ch == a_edit:
+            elif ch == locals().get("a_edit"):
                 t, ok = QInputDialog.getText(self, "Rename", "New label:", text=node.label)
                 if ok and t:
-                    node.label = t
-                    node._refresh_text()
+                    node.label = t; node._refresh_text()
                     self.scene().graph_changed.emit()
-            elif ch == a_col:
+            elif ch == locals().get("a_col"):
                 c = QColorDialog.getColor(QColor(node.color), self)
                 if c.isValid():
-                    node.color = c.name()
-                    node._refresh_text()
-                    self.scene().update()
-                    self.scene().graph_changed.emit()
+                    node.color = c.name(); node._refresh_text()
+                    self.scene().update(); self.scene().graph_changed.emit()
             elif ch == a_copy:
-                if not node.isSelected():
-                    self.scene().clearSelection()
-                    node.setSelected(True)
                 self._copy_selected()
             elif ch == a_del:
-                self.scene().delete_node(node)
+                for it in list(self.scene().selectedItems()):
+                    if isinstance(it, NodeItem):
+                        self.scene().delete_node(it)
 
+        # ── Group context ─────────────────────────────────────────────────────
+        elif group:
+            a_rename  = menu.addAction("✏️  Rename group")
+            a_col     = menu.addAction("🎨  Change group colour")
+            a_sel_mem = menu.addAction("☑️  Select all members")
+            menu.addSeparator()
+            a_ungroup = menu.addAction("⬡  Ungroup  (Ctrl+Shift+G)")
+            ch = menu.exec_(event.globalPos())
+            if ch is None:
+                return
+            if ch == a_rename:
+                name, ok = QInputDialog.getText(
+                    self, "Rename Group", "Name:", text=group.name)
+                if ok and name:
+                    group.name = name
+                    group.update()
+                    self.scene().graph_changed.emit()
+            elif ch == a_col:
+                c = QColorDialog.getColor(QColor(group.color), self)
+                if c.isValid():
+                    group.color = c.name()
+                    group.update()
+                    self.scene().graph_changed.emit()
+            elif ch == a_sel_mem:
+                self.scene().clearSelection()
+                for nid in group.member_ids:
+                    node = self.scene().nodes.get(nid)
+                    if node:
+                        node.setSelected(True)
+            elif ch == a_ungroup:
+                self.scene().ungroup(group)
+
+        # ── Canvas-text context ───────────────────────────────────────────────
+        elif ctext:
+            a_edit   = menu.addAction("✏️  Edit text")
+            a_font   = menu.addMenu("🔤  Font size")
+            size_acts = {}
+            for sz in (10, 12, 14, 18, 24, 32, 48, 64):
+                act = a_font.addAction(
+                    ("✓ " if ctext.font_size == sz else "    ") + str(sz))
+                size_acts[act] = sz
+            a_bold   = menu.addAction("B  Bold")
+            a_bold.setCheckable(True); a_bold.setChecked(ctext.bold)
+            a_italic = menu.addAction("I  Italic")
+            a_italic.setCheckable(True); a_italic.setChecked(ctext.italic)
+            a_col    = menu.addAction("🎨  Colour")
+            menu.addSeparator()
+            a_copy   = menu.addAction("📋  Copy  (Ctrl+C)")
+            a_del    = menu.addAction("🗑️  Delete text")
+
+            ch = menu.exec_(event.globalPos())
+            if ch is None:
+                return
+            if ch == a_edit:
+                t, ok = QInputDialog.getMultiLineText(
+                    self, "Edit Text", "Content:", ctext.text)
+                if ok:
+                    ctext.text = t; ctext._refresh()
+                    self.scene().graph_changed.emit()
+            elif ch in size_acts:
+                ctext.font_size = size_acts[ch]; ctext._refresh()
+                self.scene().graph_changed.emit()
+            elif ch == a_bold:
+                ctext.bold = a_bold.isChecked(); ctext._refresh()
+                self.scene().graph_changed.emit()
+            elif ch == a_italic:
+                ctext.italic = a_italic.isChecked(); ctext._refresh()
+                self.scene().graph_changed.emit()
+            elif ch == a_col:
+                c = QColorDialog.getColor(QColor(ctext.color), self)
+                if c.isValid():
+                    ctext.color = c.name(); ctext._refresh()
+                    self.scene().update(); self.scene().graph_changed.emit()
+            elif ch == a_copy:
+                if not ctext.isSelected():
+                    self.scene().clearSelection()
+                    ctext.setSelected(True)
+                self._copy_selected()
+            elif ch == a_del:
+                self.scene().delete_text(ctext)
+
+        # ── Edge context ──────────────────────────────────────────────────────
         elif edge:
             a_lbl  = menu.addAction("🏷️  Edit label")
             a_col  = menu.addAction("🎨  Change colour")
@@ -777,38 +1335,61 @@ class CanvasView(QGraphicsView):
                 a_typ.addAction(("✓ " if t == edge.edge_type else "    ") + t): t
                 for t in config.EDGE_TYPE_COLORS
             }
+            a_sty  = menu.addMenu("〰  Line style")
+            sty_acts = {
+                a_sty.addAction(("✓ " if s == edge.line_style else "    ") + s.capitalize()): s
+                for s in ("solid", "dashed", "dotted")
+            }
             menu.addSeparator()
-            a_del = menu.addAction("🗑️  Delete edge")
+            a_del  = menu.addAction("🗑️  Delete edge")
             ch = menu.exec_(event.globalPos())
+            if ch is None:
+                return
             if ch == a_lbl:
                 t, ok = QInputDialog.getText(self, "Edge Label", "Label:", text=edge.label)
                 if ok:
-                    edge.set_label(t)
-                    self.scene().graph_changed.emit()
+                    edge.set_label(t); self.scene().graph_changed.emit()
             elif ch == a_col:
                 c = QColorDialog.getColor(QColor(edge.color), self)
                 if c.isValid():
-                    edge.color = c.name()
-                    edge._refresh_label_text()
-                    self.scene().update()
-                    self.scene().graph_changed.emit()
+                    edge.color = c.name(); edge._refresh_label_text()
+                    self.scene().update(); self.scene().graph_changed.emit()
             elif ch in dir_acts:
-                edge.set_direction(dir_acts[ch])
-                self.scene().graph_changed.emit()
+                edge.set_direction(dir_acts[ch]); self.scene().graph_changed.emit()
             elif ch in typ_acts:
-                edge.set_edge_type(typ_acts[ch])
-                self.scene().graph_changed.emit()
+                edge.set_edge_type(typ_acts[ch]); self.scene().graph_changed.emit()
+            elif ch in sty_acts:
+                edge.set_line_style(sty_acts[ch]); self.scene().graph_changed.emit()
             elif ch == a_del:
                 self.scene().delete_edge(edge)
 
+        # ── Empty canvas context ──────────────────────────────────────────────
         else:
             a_add   = menu.addAction("➕  Add node here")
+            a_txt   = menu.addAction("🔤  Add text here")
+            menu.addSeparator()
+            sel_nodes = [i for i in self.scene().selectedItems()
+                         if isinstance(i, (NodeItem, CanvasTextItem))]
+            a_copy = None
+            if sel_nodes:
+                a_copy = menu.addAction(
+                    f"📋  Copy selection ({len(sel_nodes)})  (Ctrl+C)")
             a_paste = menu.addAction("📋  Paste  (Ctrl+V)")
+
             ch = menu.exec_(event.globalPos())
+            if ch is None:
+                return
             if ch == a_add:
                 lbl, ok = QInputDialog.getText(self, "New Node", "Label:")
                 if ok and lbl:
                     self.scene().add_node(label=lbl, x=scene_pos.x(), y=scene_pos.y())
+            elif ch == a_txt:
+                txt, ok = QInputDialog.getMultiLineText(
+                    self, "Add Text", "Content:", "Heading")
+                if ok and txt:
+                    self.scene().add_text(text=txt, x=scene_pos.x(), y=scene_pos.y())
+            elif a_copy and ch == a_copy:
+                self._copy_selected()
             elif ch == a_paste:
                 self._paste(scene_pos)
 

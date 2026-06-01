@@ -1,12 +1,13 @@
 """
-ui.py — Sidebar, SearchBar, SettingsDialog
+ui.py — Sidebar, SearchBar, SettingsDialog, FileExplorer
 """
-import copy
+import os, copy
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
@@ -113,6 +114,7 @@ class Sidebar(QWidget):
         self.scene = scene
         self._node = None
         self._edge = None
+        self._group = None
         self._expanded_width = 290
         self._collapsed_width = 32
         self._collapsed = False
@@ -230,7 +232,7 @@ class Sidebar(QWidget):
         return not collapsed
 
     def show_empty(self):
-        self._node = self._edge = None
+        self._node = self._edge = self._group = None
         self._clear()
         self.header.setText("Properties")
         sf  = config.SETTINGS["sidebar_font_size"]
@@ -244,19 +246,85 @@ class Sidebar(QWidget):
         self.cl.addStretch()
 
     def show_node(self, node):
-        self._node = node
-        self._edge = None
+        self._node = node; self._edge = None; self._group = None
         self._clear()
         self.header.setText(f"Node  ·  {node.node_id}")
+        self._label_edit = None
         self._build_node_ui(node)
         self.cl.addStretch()
+        # Auto-focus label field so Tab immediately starts navigating
+        if self._label_edit:
+            self._label_edit.setFocus()
+            self._label_edit.selectAll()
 
     def show_edge(self, edge):
-        self._edge = edge
-        self._node = None
+        self._edge = edge; self._node = None; self._group = None
         self._clear()
         self.header.setText(f"Edge  ·  {edge.edge_id}")
         self._build_edge_ui(edge)
+        self.cl.addStretch()
+
+    def show_group(self, group):
+        self._group = group; self._node = None; self._edge = None
+        self._clear()
+        sf = config.SETTINGS["sidebar_font_size"]
+        self.header.setText(f"Group  ·  {group.group_id}")
+
+        self._section("Name")
+        name_edit = QLineEdit(group.name)
+        name_edit.setStyleSheet(_inp_ss())
+        def _save_name():
+            group.name = name_edit.text()
+            group.update()
+            self.scene.graph_changed.emit()
+        name_edit.editingFinished.connect(_save_name)
+        self.cl.addWidget(name_edit)
+
+        self._section("Colour")
+        cr = QFrame(); cr.setStyleSheet("background:transparent;")
+        cl = QHBoxLayout(cr); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(6)
+        sw = QPushButton(); sw.setFixedSize(22, 22)
+        sw.setStyleSheet(_swatch_ss(group.color))
+        col_lbl = QLabel("Group colour")
+        col_lbl.setStyleSheet(
+            f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
+        def _pick_col():
+            c = QColorDialog.getColor(QColor(group.color), self)
+            if c.isValid():
+                group.color = c.name()
+                sw.setStyleSheet(_swatch_ss(group.color))
+                group.update()
+                self.scene.graph_changed.emit()
+        sw.clicked.connect(_pick_col)
+        cl.addWidget(sw); cl.addWidget(col_lbl); cl.addStretch()
+        self.cl.addWidget(cr)
+
+        self._section(f"Members ({len(group.member_ids)})")
+        for nid in group.member_ids:
+            node = self.scene.nodes.get(nid)
+            if not node:
+                continue
+            mb = QPushButton(f"↗  {node.label}")
+            mb.setToolTip(f"Jump to: {node.label}")
+            mb.setStyleSheet(
+                f"QPushButton {{ text-align:left; padding:5px 10px;"
+                f" background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')};"
+                f" border:1px solid {gc('BORDER')}; border-radius:4px;"
+                f" font-size:{sf-1}px; }}"
+                f" QPushButton:hover {{ background:{gc('ACCENT')}; color:white; }}")
+            def _jump(checked=False, n=node):
+                self.scene.clearSelection()
+                n.setSelected(True)
+                self.scene.node_selected.emit(n)
+                for view in self.scene.views():
+                    view.centerOn(n)
+            mb.clicked.connect(_jump)
+            self.cl.addWidget(mb)
+
+        ub = QPushButton("⬡  Ungroup")
+        ub.setStyleSheet(_btn_ss(gc("ACCENT2")))
+        ub.clicked.connect(lambda: (self.scene.ungroup(group), self.show_empty()))
+        self.cl.addWidget(ub)
         self.cl.addStretch()
 
     # ── Node UI ───────────────────────────────────────────────────────────────
@@ -266,6 +334,7 @@ class Sidebar(QWidget):
 
         le = QLineEdit(node.label)
         le.setStyleSheet(_inp_ss())
+        self._label_edit = le   # stored so show_node can focus it
         def _upd_label():
             node.label = le.text()
             node._refresh_text()
@@ -341,18 +410,33 @@ class Sidebar(QWidget):
         al.addWidget(ki); al.addWidget(vi); al.addWidget(ab)
         self.cl.addWidget(add_row)
 
-        # Connections list
+        # Connections list — clickable jump buttons
         if node.edges:
             self._section(f"Edges ({len(node.edges)})")
             for e in node.edges:
                 other = e.target_node if e.source_node is node else e.source_node
-                txt = f"{e.direction} {other.label}" + (f"  [{e.label}]" if e.label else "")
-                el = QLabel(txt)
-                el.setStyleSheet(
-                    f"color:{gc('TEXT_PRIMARY')}; font-size:{sf-1}px; padding:4px 8px;"
-                    f" background:{gc('BG_CARD')}; border-radius:4px;"
-                    f" border:1px solid {gc('BORDER')};")
-                self.cl.addWidget(el)
+                direction_lbl = e.direction
+                edge_lbl = f"  [{e.label}]" if e.label else ""
+                btn_text = f"{direction_lbl} {other.label}{edge_lbl}"
+                jump_btn = QPushButton(btn_text)
+                jump_btn.setToolTip(f"Jump to: {other.label}")
+                jump_btn.setStyleSheet(
+                    f"QPushButton {{ text-align:left; padding:5px 10px;"
+                    f" background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')};"
+                    f" border:1px solid {gc('BORDER')}; border-radius:4px;"
+                    f" font-size:{sf-1}px; }}"
+                    f" QPushButton:hover {{ background:{gc('ACCENT')}; color:white;"
+                    f" border-color:{gc('ACCENT')}; }}")
+                # Capture other node for the closure
+                def _jump(checked=False, target=other):
+                    self.scene.clearSelection()
+                    target.setSelected(True)
+                    self.scene.node_selected.emit(target)
+                    # Centre the view on the target node
+                    for view in self.scene.views():
+                        view.centerOn(target)
+                jump_btn.clicked.connect(_jump)
+                self.cl.addWidget(jump_btn)
 
         if self._collapsible_section("sticky", "Sticky Text"):
             show = QCheckBox("Show on canvas")
@@ -413,6 +497,15 @@ class Sidebar(QWidget):
 
     # ── Edge UI ───────────────────────────────────────────────────────────────
     def _build_edge_ui(self, edge):
+        self._section("Line Style")
+        lsc = QComboBox()
+        lsc.addItems(["Solid", "Dashed", "Dotted"])
+        lsc.setCurrentText(edge.line_style.capitalize())
+        lsc.setStyleSheet(_combo_ss())
+        lsc.currentTextChanged.connect(
+            lambda s: (edge.set_line_style(s.lower()), self.scene.graph_changed.emit()))
+        self.cl.addWidget(lsc)
+
         self._section("Direction")
         dc = QComboBox(); dc.addItems(config.EDGE_DIRECTIONS)
         dc.setCurrentText(edge.direction); dc.setStyleSheet(_combo_ss())
@@ -977,3 +1070,244 @@ class SettingsDialog(QDialog):
             "Current settings saved as app default.\n"
             "They will be loaded automatically on next launch.")
         self.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  FileExplorer — collapsible left sidebar (VS Code / Remnote style)
+# ─────────────────────────────────────────────────────────────────────────────
+SUPPORTED_EXT = {".json", ".weave", ".bweave"}
+
+def _is_valid_graph_file(path: str) -> bool:
+    """Return True only if the file looks like a Weave graph."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in SUPPORTED_EXT:
+        return False
+    try:
+        if ext == ".bweave":
+            import zlib
+            with open(path, "rb") as f:
+                magic = f.read(4)
+            return magic == b"BWVE"
+        else:
+            import json
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            return isinstance(d, dict) and ("nodes" in d or "edges" in d)
+    except Exception:
+        return False
+
+
+class FileExplorer(QWidget):
+    """
+    Left-side file explorer.
+
+    Signals
+    -------
+    open_file(str)   — emitted when the user double-clicks / activates a file
+    """
+    open_file = pyqtSignal(str)
+
+    _EXPANDED_W  = 240
+    _COLLAPSED_W = 32
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._collapsed  = False
+        self._root_path  = None   # folder path (or None when single-file mode)
+        self._file_path  = None   # single file path
+
+        self.setFixedWidth(self._EXPANDED_W)
+        self.setMinimumWidth(self._COLLAPSED_W)
+
+        root_lay = QVBoxLayout(self)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        root_lay.setSpacing(0)
+
+        # ── Header bar ────────────────────────────────────────────────────────
+        self._header = QFrame()
+        self._header.setFixedHeight(42)
+        h_lay = QHBoxLayout(self._header)
+        h_lay.setContentsMargins(10, 0, 4, 0)
+        h_lay.setSpacing(4)
+
+        self._title = QLabel("Explorer")
+        self._title.setStyleSheet(
+            f"color:{gc('TEXT_PRIMARY')}; font-weight:bold; font-size:13px;"
+            f" background:transparent; border:none;")
+        h_lay.addWidget(self._title, 1)
+
+        self._toggle_btn = QPushButton("‹")
+        self._toggle_btn.setFixedSize(28, 28)
+        self._toggle_btn.setToolTip("Collapse explorer  (Ctrl+E)")
+        self._toggle_btn.clicked.connect(self.toggle_collapsed)
+        self._toggle_btn.setStyleSheet(self._btn_style())
+        h_lay.addWidget(self._toggle_btn)
+
+        root_lay.addWidget(self._header)
+
+        # ── Thin separator line ───────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background:{gc('BORDER')}; border:none;")
+        root_lay.addWidget(sep)
+
+        # ── Tree widget ───────────────────────────────────────────────────────
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setIndentation(16)
+        self._tree.setAnimated(True)
+        self._tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._tree.itemActivated.connect(self._on_item_activated)
+        self._tree.setStyleSheet(self._tree_style())
+        root_lay.addWidget(self._tree, 1)
+
+        # ── Empty-state hint (shown when nothing is loaded) ───────────────────
+        self._hint = QLabel(
+            "Use  File ▾  to open\na file or folder.")
+        self._hint.setAlignment(Qt.AlignCenter)
+        self._hint.setWordWrap(True)
+        self._hint.setStyleSheet(
+            f"color:{gc('TEXT_MUTED')}; font-size:11px;"
+            f" padding:20px 12px; background:transparent;")
+        root_lay.addWidget(self._hint)
+        root_lay.addStretch()
+
+        self._apply_header_style()
+        self._sync_visibility()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+    def load_single_file(self, path: str):
+        """Show exactly one file entry (Open File mode)."""
+        self._root_path = None
+        self._file_path = path
+        self._tree.clear()
+        item = QTreeWidgetItem([os.path.basename(path)])
+        item.setData(0, Qt.UserRole, path)
+        item.setToolTip(0, path)
+        self._tree.addTopLevelItem(item)
+        self._tree.expandAll()
+        self._hint.hide()
+        self._tree.show()
+
+    def load_folder(self, folder: str):
+        """Show the folder tree (Open Folder mode), only supported files/dirs."""
+        self._root_path = folder
+        self._file_path = None
+        self._tree.clear()
+        self._title.setText(os.path.basename(folder) or folder)
+        root_item = QTreeWidgetItem([os.path.basename(folder) or folder])
+        root_item.setData(0, Qt.UserRole, folder)
+        root_item.setToolTip(0, folder)
+        self._populate(root_item, folder)
+        self._tree.addTopLevelItem(root_item)
+        root_item.setExpanded(True)
+        self._hint.hide()
+        self._tree.show()
+
+    def apply_style(self):
+        self._apply_header_style()
+        self._tree.setStyleSheet(self._tree_style())
+        self._hint.setStyleSheet(
+            f"color:{gc('TEXT_MUTED')}; font-size:11px;"
+            f" padding:20px 12px; background:transparent;")
+        self.setStyleSheet(f"background:{gc('BG_PANEL')};")
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, val: bool):
+        self._collapsed = val
+        self._sync_visibility()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+    def _populate(self, parent_item: QTreeWidgetItem, folder: str):
+        """Recursively add sub-folders and supported files under parent_item."""
+        try:
+            entries = sorted(os.scandir(folder), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            return
+
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                child = QTreeWidgetItem([entry.name])
+                child.setData(0, Qt.UserRole, entry.path)
+                child.setToolTip(0, entry.path)
+                # Check if this sub-dir has any valid content before adding it
+                if self._dir_has_content(entry.path):
+                    self._populate(child, entry.path)
+                    parent_item.addChild(child)
+            elif entry.is_file():
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext in SUPPORTED_EXT:
+                    child = QTreeWidgetItem([entry.name])
+                    child.setData(0, Qt.UserRole, entry.path)
+                    child.setToolTip(0, entry.path)
+                    parent_item.addChild(child)
+
+    def _dir_has_content(self, folder: str) -> bool:
+        """Recursively check if folder contains any supported files."""
+        try:
+            for entry in os.scandir(folder):
+                if entry.name.startswith("."):
+                    continue
+                if entry.is_file():
+                    ext = os.path.splitext(entry.name)[1].lower()
+                    if ext in SUPPORTED_EXT:
+                        return True
+                elif entry.is_dir() and self._dir_has_content(entry.path):
+                    return True
+        except PermissionError:
+            pass
+        return False
+
+    def _on_item_activated(self, item: QTreeWidgetItem, _col: int):
+        path = item.data(0, Qt.UserRole)
+        if path and os.path.isfile(path):
+            if not _is_valid_graph_file(path):
+                name = os.path.basename(path)
+                QMessageBox.warning(
+                    self, "Incompatible file",
+                    f"'{name}' doesn't look like a Weave graph file.\n"
+                    "Only .json files exported by Weave are supported.")
+                return
+            self.open_file.emit(path)
+
+    def _sync_visibility(self):
+        collapsed = self._collapsed
+        self.setFixedWidth(self._COLLAPSED_W if collapsed else self._EXPANDED_W)
+        self._title.setVisible(not collapsed)
+        self._tree.setVisible(not collapsed and not self._hint.isVisible()
+                              or (not collapsed and self._tree.topLevelItemCount() > 0))
+        self._hint.setVisible(not collapsed and self._tree.topLevelItemCount() == 0)
+        self._toggle_btn.setText("›" if collapsed else "‹")
+        self._toggle_btn.setToolTip(
+            "Expand explorer  (Ctrl+E)" if collapsed else "Collapse explorer  (Ctrl+E)")
+
+    def _apply_header_style(self):
+        self.setStyleSheet(f"background:{gc('BG_PANEL')};")
+        self._header.setStyleSheet(
+            f"QFrame {{ background:{gc('BG_DARK')};"
+            f" border-bottom:1px solid {gc('BORDER')}; }}")
+        self._title.setStyleSheet(
+            f"color:{gc('TEXT_PRIMARY')}; font-weight:bold; font-size:13px;"
+            f" background:transparent; border:none;")
+        self._toggle_btn.setStyleSheet(self._btn_style())
+
+    def _btn_style(self):
+        return (f"QPushButton {{ background:transparent; color:{gc('TEXT_MUTED')};"
+                f" border:none; font-size:16px; font-weight:bold; border-radius:4px; }}"
+                f" QPushButton:hover {{ background:{gc('BG_CARD')};"
+                f" color:{gc('TEXT_PRIMARY')}; }}")
+
+    def _tree_style(self):
+        return (
+            f"QTreeWidget {{ background:{gc('BG_PANEL')}; color:{gc('TEXT_PRIMARY')};"
+            f" border:none; font-size:12px; }}"
+            f" QTreeWidget::item {{ padding:4px 6px; border-radius:4px; }}"
+            f" QTreeWidget::item:hover {{ background:{gc('BG_CARD')}; }}"
+            f" QTreeWidget::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
+            f" QTreeWidget::branch {{ background:{gc('BG_PANEL')}; }}"
+        )
