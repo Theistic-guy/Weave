@@ -570,6 +570,15 @@ class Sidebar(QWidget):
             self._edge_label_edit.setFocus()
             self._edge_label_edit.selectAll()
 
+    def mousePressEvent(self, event):
+        if (
+            self._collapsed and
+            event.button() == Qt.LeftButton
+        ):
+            self.set_collapsed(False)
+
+        super().mousePressEvent(event)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SearchBar
