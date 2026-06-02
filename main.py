@@ -374,21 +374,33 @@ class MainWindow(QMainWindow):
 
     def _on_node_sel(self, node):
         if node:
+            if self.sidebar._collapsed:
+                self.sidebar.set_collapsed(False)
+
             self.sidebar.show_node(node)
+
         elif self.sidebar._edge is None and self.sidebar._group is None:
-            self.sidebar.show_empty()
+            self.sidebar.set_collapsed(True)
 
     def _on_edge_sel(self, edge):
         if edge:
+            if self.sidebar._collapsed:
+                self.sidebar.set_collapsed(False)
+
             self.sidebar.show_edge(edge)
+
         elif self.sidebar._node is None and self.sidebar._group is None:
-            self.sidebar.show_empty()
+            self.sidebar.set_collapsed(True)
 
     def _on_group_sel(self, group):
         if group:
+            if self.sidebar._collapsed:
+                self.sidebar.set_collapsed(False)
+
             self.sidebar.show_group(group)
+
         elif self.sidebar._node is None and self.sidebar._edge is None:
-            self.sidebar.show_empty()
+            self.sidebar.set_collapsed(True)
 
     def _on_changed(self):
         self._dirty = True
