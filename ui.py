@@ -109,8 +109,8 @@ class PropRow(QFrame):
 #  Sidebar
 # ─────────────────────────────────────────────────────────────────────────────
 class Sidebar(QWidget):
-    def __init__(self, scene):
-        super().__init__()
+    def __init__(self, scene,parent=None):
+        super().__init__(parent)
         self.scene = scene
         self._node = None
         self._edge = None
@@ -185,6 +185,10 @@ class Sidebar(QWidget):
             "Expand inspector" if collapsed else "Collapse inspector")
         self.setFixedWidth(
             self._collapsed_width if collapsed else self._expanded_width)
+
+        host = self.parentWidget()
+        if host and hasattr(host, "reflow"):
+            host.reflow()
 
     def _clear(self):
         while self.cl.count():

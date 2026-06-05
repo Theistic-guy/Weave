@@ -15,6 +15,33 @@ from config import gc, qc
 from canvas import GraphScene, CanvasView, NodeItem, EdgeItem, CanvasTextItem, NodeGroup
 from ui import Sidebar, SearchBar, SettingsDialog, FileExplorer
 
+class CanvasOverlayHost(QWidget):
+    def __init__(self, view, sidebar, parent=None):
+        super().__init__(parent)
+        self.view = view
+        self.sidebar = sidebar
+
+        self.view.setParent(self)
+        self.sidebar.setParent(self)
+
+        self.view.show()
+        self.sidebar.show()
+        self.sidebar.raise_()
+
+    def reflow(self):
+        self.view.setGeometry(self.rect())
+
+        w = (self.sidebar._collapsed_width
+             if self.sidebar._collapsed
+             else self.sidebar._expanded_width)
+        w = min(w, self.width())
+
+        self.sidebar.setGeometry(self.width() - w, 0, w, self.height())
+        self.sidebar.raise_()
+
+    def resizeEvent(self, event):
+        self.reflow()
+        super().resizeEvent(event)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -78,6 +105,7 @@ class MainWindow(QMainWindow):
         self.view.zoom_changed.connect(self._on_zoom)
 
     def _build_ui(self):
+        
         central = QWidget()
         self.setCentralWidget(central)
         ml = QVBoxLayout(central)
@@ -89,24 +117,19 @@ class MainWindow(QMainWindow):
         self.search_bar.hide()
         ml.addWidget(self.search_bar)
 
-        # Outer splitter: FileExplorer | inner
+        # Left explorer stays as splitter
         self.outer_splitter = QSplitter(Qt.Horizontal)
 
         self.file_explorer = FileExplorer()
         self.file_explorer.open_file.connect(self._open_file_from_explorer)
         self.outer_splitter.addWidget(self.file_explorer)
 
-        # Inner splitter: canvas | right sidebar
-        self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.view)
+        # Canvas + floating inspector overlay
         self.sidebar = Sidebar(self.scene)
-        self.splitter.addWidget(self.sidebar)
-        self.splitter.setSizes([1100, 290])
-        self.splitter.setHandleWidth(1)
-        self.splitter.setCollapsible(0, False)
-        self.splitter.setCollapsible(1, False)
+        self.canvas_host = CanvasOverlayHost(self.view, self.sidebar)
+        self.canvas_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        self.outer_splitter.addWidget(self.splitter)
+        self.outer_splitter.addWidget(self.canvas_host)
         self.outer_splitter.setSizes([self.file_explorer._EXPANDED_W, 1390])
         self.outer_splitter.setHandleWidth(1)
         self.outer_splitter.setCollapsible(0, False)
@@ -371,36 +394,24 @@ class MainWindow(QMainWindow):
         else:
             self.search_bar.edit.clear()
             self.view.setFocus()
-
+            
     def _on_node_sel(self, node):
         if node:
-            if self.sidebar._collapsed:
-                self.sidebar.set_collapsed(False)
-
-            self.sidebar.show_node(node)
-
+            self._show_inspector(self.sidebar.show_node, node)
         elif self.sidebar._edge is None and self.sidebar._group is None:
-            self.sidebar.set_collapsed(True)
+            self._hide_inspector()
 
     def _on_edge_sel(self, edge):
         if edge:
-            if self.sidebar._collapsed:
-                self.sidebar.set_collapsed(False)
-
-            self.sidebar.show_edge(edge)
-
+            self._show_inspector(self.sidebar.show_edge, edge)
         elif self.sidebar._node is None and self.sidebar._group is None:
-            self.sidebar.set_collapsed(True)
+            self._hide_inspector()
 
     def _on_group_sel(self, group):
         if group:
-            if self.sidebar._collapsed:
-                self.sidebar.set_collapsed(False)
-
-            self.sidebar.show_group(group)
-
+            self._show_inspector(self.sidebar.show_group, group)
         elif self.sidebar._node is None and self.sidebar._edge is None:
-            self.sidebar.set_collapsed(True)
+            self._hide_inspector()
 
     def _on_changed(self):
         self._dirty = True
@@ -806,6 +817,15 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         event.accept()
+
+    def _show_inspector(self, fn, obj):
+        if self.sidebar._collapsed:
+            self.sidebar.set_collapsed(False)
+        fn(obj)
+
+    def _hide_inspector(self):
+        self.sidebar.show_empty()
+        self.sidebar.set_collapsed(True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
