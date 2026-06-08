@@ -911,7 +911,8 @@ class GraphScene(QGraphicsScene):
 
                     if isinstance(p, EdgeItem):
 
-                        self.clearSelection()
+                        if not (event.modifiers() & Qt.ControlModifier):
+                            self.clearSelection()
                         p.setSelected(True)
 
                         self.edge_selected.emit(p)
@@ -925,7 +926,9 @@ class GraphScene(QGraphicsScene):
                         clicked = p
                         break
             if isinstance(clicked, NodeItem):
-                self.clearSelection()
+                if not (event.modifiers() & Qt.ControlModifier):
+                    self.clearSelection()
+                
                 clicked.setSelected(True)
 
                 self.node_selected.emit(clicked)
@@ -933,7 +936,8 @@ class GraphScene(QGraphicsScene):
                 self.group_selected.emit(None)
 
             elif isinstance(clicked, EdgeItem):
-                self.clearSelection()
+                if not (event.modifiers() & Qt.ControlModifier):
+                    self.clearSelection()
                 clicked.setSelected(True)
                 print("BEFORE SUPER:", self.selectedItems())
                 self.edge_selected.emit(clicked)
@@ -941,7 +945,8 @@ class GraphScene(QGraphicsScene):
                 self.group_selected.emit(None)
 
             elif isinstance(clicked, NodeGroup):
-                self.clearSelection()
+                if not (event.modifiers() & Qt.ControlModifier):
+                    self.clearSelection()
                 clicked.setSelected(True)
 
                 self.group_selected.emit(clicked)
