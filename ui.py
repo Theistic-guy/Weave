@@ -3,7 +3,7 @@ ui.py — Sidebar, SearchBar, SettingsDialog, FileExplorer
 """
 import os, copy
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QApplication,QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
+from PyQt5.QtCore import Qt, pyqtSignal, QEvent
 
 import config
 from config import gc, qc
@@ -108,6 +109,68 @@ class PropRow(QFrame):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Sidebar
 # ─────────────────────────────────────────────────────────────────────────────
+
+class SidebarResizeHandle(QWidget):
+    HANDLE_W = 10
+
+    def __init__(self, sidebar):
+        super().__init__(sidebar)
+        self.sidebar = sidebar
+        self._dragging = False
+        self._start_global_x = 0
+        self._start_width = 0
+        self.setCursor(Qt.SizeHorCursor)
+        self.setMouseTracking(True)
+        self.setStyleSheet("background: transparent;")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.sidebar._collapsed:
+                self.sidebar.set_collapsed(False)
+                event.accept()
+                return
+
+            self._dragging = True
+            self._start_global_x = event.globalPos().x()
+            self._start_width = self.sidebar.width()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            self.setCursor(Qt.SizeHorCursor)
+            super().mouseMoveEvent(event)
+            return
+
+        dx = self._start_global_x - event.globalPos().x()
+        new_width = max(240, self._start_width + dx)
+
+        self.sidebar._expanded_width = new_width
+
+        print("DRAGGED TO", new_width)
+        print("SAVED expanded_width =", self.sidebar._expanded_width)
+        
+        self.sidebar.setMinimumWidth(240)
+        self.sidebar.setMaximumWidth(16777215)
+        self.sidebar.resize(new_width, self.sidebar.height())
+
+        host = self.sidebar.parentWidget()
+        if host and hasattr(host, "reflow"):
+            host.reflow()
+
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging and event.button() == Qt.LeftButton:
+            self._dragging = False
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event)
+
+
 class Sidebar(QWidget):
     def __init__(self, scene,parent=None):
         super().__init__(parent)
@@ -119,7 +182,12 @@ class Sidebar(QWidget):
         self._collapsed_width = 32
         self._collapsed = False
         self._section_collapsed = {"sticky": False, "notes": False}
-        self.setFixedWidth(self._expanded_width)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(16777215)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        
+        
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -149,6 +217,13 @@ class Sidebar(QWidget):
         self.scroll.setWidget(self.content)
         root.addWidget(self.scroll)
 
+        self._resize_handle = SidebarResizeHandle(self)
+        self._resize_handle.setGeometry(
+            0, 0, SidebarResizeHandle.HANDLE_W, self.height()
+        )
+        self._resize_handle.hide()
+        self._resize_handle.raise_()
+
         self.apply_style()
         self.show_empty()
 
@@ -177,14 +252,32 @@ class Sidebar(QWidget):
         self.set_collapsed(not self._collapsed)
 
     def set_collapsed(self, collapsed):
+
+        print("SET_COLLAPSED", collapsed)
+        print("expanded_width =", self._expanded_width)
+        print("current width =", self.width())
+        if collapsed and not self._collapsed:
+            self._expanded_width = self.width()
+
         self._collapsed = collapsed
         self.header.setVisible(not collapsed)
         self.scroll.setVisible(not collapsed)
         self.collapse_btn.setText("<" if collapsed else ">")
         self.collapse_btn.setToolTip(
             "Expand inspector" if collapsed else "Collapse inspector")
-        self.setFixedWidth(
-            self._collapsed_width if collapsed else self._expanded_width)
+        
+        if hasattr(self, "_resize_handle"):
+            self._resize_handle.setVisible(not collapsed)
+
+
+        if collapsed:
+            self.setFixedWidth(self._collapsed_width)
+        else:
+            self.setMinimumWidth(240)
+            self.setMaximumWidth(16777215)
+
+            # restore previous width
+            self.resize(self._expanded_width, self.height())
 
         host = self.parentWidget()
         if host and hasattr(host, "reflow"):
@@ -575,13 +668,31 @@ class Sidebar(QWidget):
             self._edge_label_edit.selectAll()
 
     def mousePressEvent(self, event):
+        
         if (
             self._collapsed and
             event.button() == Qt.LeftButton
         ):
             self.set_collapsed(False)
+            # event.accept()
+            # return 
 
         super().mousePressEvent(event)
+
+    
+
+    def resizeEvent(self, event):
+        print("RESIZE EVENT width =", self.width(),"collapsed =", self._collapsed)
+        if hasattr(self, "_resize_handle"):
+            self._resize_handle.setGeometry(
+                0, 0, SidebarResizeHandle.HANDLE_W, self.height()
+            )
+            self._resize_handle.raise_()
+        if not self._collapsed:
+            self._expanded_width = max(self.width(), 240)
+        super().resizeEvent(event)
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

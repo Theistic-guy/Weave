@@ -965,9 +965,9 @@ class GraphScene(QGraphicsScene):
                 self.node_selected.emit(None)
                 self.edge_selected.emit(None)
                 self.group_selected.emit(None)
-        print("Pre SUPER:", self.selectedItems())
+        # print("Pre SUPER:", self.selectedItems())
         super().mouseReleaseEvent(event)
-        print("POST SUPER:", self.selectedItems())
+        # print("POST SUPER:", self.selectedItems())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

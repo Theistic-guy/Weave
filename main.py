@@ -29,11 +29,17 @@ class CanvasOverlayHost(QWidget):
         self.sidebar.raise_()
 
     def reflow(self):
+        print(
+            "REFLOW:",
+            "collapsed =", self.sidebar._collapsed,
+            "expanded_width =", self.sidebar._expanded_width
+        )
         self.view.setGeometry(self.rect())
 
-        w = (self.sidebar._collapsed_width
-             if self.sidebar._collapsed
-             else self.sidebar._expanded_width)
+        if self.sidebar._collapsed:
+            w = self.sidebar._collapsed_width
+        else:
+            w = self.sidebar.width()
         w = min(w, self.width())
 
         self.sidebar.setGeometry(self.width() - w, 0, w, self.height())
