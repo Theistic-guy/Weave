@@ -148,9 +148,6 @@ class SidebarResizeHandle(QWidget):
         new_width = max(240, self._start_width + dx)
 
         self.sidebar._expanded_width = new_width
-
-        print("DRAGGED TO", new_width)
-        print("SAVED expanded_width =", self.sidebar._expanded_width)
         
         self.sidebar.setMinimumWidth(240)
         self.sidebar.setMaximumWidth(16777215)
@@ -254,9 +251,6 @@ class Sidebar(QWidget):
 
     def set_collapsed(self, collapsed):
 
-        print("SET_COLLAPSED", collapsed)
-        print("expanded_width =", self._expanded_width)
-        print("current width =", self.width())
         if collapsed and not self._collapsed:
             self._expanded_width = self.width()
 
@@ -709,8 +703,6 @@ class Sidebar(QWidget):
             self._label_edit.selectAll()
 
     def focus_edge_label(self):
-        
-        print("widget =", getattr(self, "_edge_label_edit", None))
         if getattr(self, "_edge_label_edit", None):
             self._edge_label_edit.setFocus()
             self._edge_label_edit.selectAll()
@@ -730,12 +722,6 @@ class Sidebar(QWidget):
     
 
     def resizeEvent(self, event):
-        print(
-    "RESIZE EVENT:",
-    "width =", self.width(),
-    "collapsed =", self._collapsed,
-    "expanded_width(before) =", self._expanded_width
-)
         if hasattr(self, "_resize_handle"):
             self._resize_handle.setGeometry(
                 0, 0, SidebarResizeHandle.HANDLE_W, self.height()
