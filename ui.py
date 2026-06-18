@@ -217,6 +217,7 @@ class Sidebar(QWidget):
         self.scroll.setWidget(self.content)
         root.addWidget(self.scroll)
 
+        self._restoring_width = False
         self._resize_handle = SidebarResizeHandle(self)
         self._resize_handle.setGeometry(
             0, 0, SidebarResizeHandle.HANDLE_W, self.height()
@@ -273,11 +274,15 @@ class Sidebar(QWidget):
         if collapsed:
             self.setFixedWidth(self._collapsed_width)
         else:
+            target = self._expanded_width
+            self._restoring_width = True
+
             self.setMinimumWidth(240)
             self.setMaximumWidth(16777215)
+            self.resize(target, self.height())
 
-            # restore previous width
-            self.resize(self._expanded_width, self.height())
+            self._restoring_width = False
+
 
         host = self.parentWidget()
         if host and hasattr(host, "reflow"):
@@ -682,13 +687,18 @@ class Sidebar(QWidget):
     
 
     def resizeEvent(self, event):
-        print("RESIZE EVENT width =", self.width(),"collapsed =", self._collapsed)
+        print(
+    "RESIZE EVENT:",
+    "width =", self.width(),
+    "collapsed =", self._collapsed,
+    "expanded_width(before) =", self._expanded_width
+)
         if hasattr(self, "_resize_handle"):
             self._resize_handle.setGeometry(
                 0, 0, SidebarResizeHandle.HANDLE_W, self.height()
             )
             self._resize_handle.raise_()
-        if not self._collapsed:
+        if not self._collapsed and  not self._restoring_width:
             self._expanded_width = max(self.width(), 240)
         super().resizeEvent(event)
 
