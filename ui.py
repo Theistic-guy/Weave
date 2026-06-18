@@ -288,6 +288,45 @@ class Sidebar(QWidget):
         if host and hasattr(host, "reflow"):
             host.reflow()
 
+    def _install_zoom_filters(self):
+        widgets = [self, self.header_wrap, self.scroll, self.scroll.viewport(), self.content]
+        widgets.extend(self.findChildren(QWidget))
+
+        for w in widgets:
+            if w is not None:
+                w.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and (event.modifiers() & Qt.ControlModifier):
+            self._apply_sidebar_zoom(event.angleDelta().y())
+            event.accept()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _apply_sidebar_zoom(self, delta):
+        step = 1 if delta > 0 else -1
+        config.SETTINGS["sidebar_font_size"] = max(
+            8,
+            min(24, config.SETTINGS["sidebar_font_size"] + step)
+        )
+
+        current_node = self._node
+        current_edge = self._edge
+        current_group = self._group
+
+        self.apply_style()
+
+        if current_node is not None:
+            self.show_node(current_node)
+        elif current_edge is not None:
+            self.show_edge(current_edge)
+        elif current_group is not None:
+            self.show_group(current_group)
+        else:
+            self.show_empty()
+
+        self._install_zoom_filters()
+
     def _clear(self):
         while self.cl.count():
             it = self.cl.takeAt(0)
@@ -348,6 +387,7 @@ class Sidebar(QWidget):
         lbl.setWordWrap(True)
         self.cl.addWidget(lbl)
         self.cl.addStretch()
+        self._install_zoom_filters()
 
     def show_node(self, node):
         self._node = node; self._edge = None; self._group = None
@@ -356,6 +396,7 @@ class Sidebar(QWidget):
         self._label_edit = None
         self._build_node_ui(node)
         self.cl.addStretch()
+        self._install_zoom_filters()
         
 
     def show_edge(self, edge):
@@ -364,6 +405,7 @@ class Sidebar(QWidget):
         self.header.setText(f"Edge  ·  {edge.edge_id}")
         self._build_edge_ui(edge)
         self.cl.addStretch()
+        self._install_zoom_filters()
 
     def show_group(self, group):
         self._group = group; self._node = None; self._edge = None
@@ -427,6 +469,7 @@ class Sidebar(QWidget):
         ub.clicked.connect(lambda: (self.scene.ungroup(group), self.show_empty()))
         self.cl.addWidget(ub)
         self.cl.addStretch()
+        self._install_zoom_filters()
 
     # ── Node UI ───────────────────────────────────────────────────────────────
     def _build_node_ui(self, node):
