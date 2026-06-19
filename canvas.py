@@ -604,6 +604,7 @@ class GraphScene(QGraphicsScene):
         self._connecting   = False
         self._conn_source  = None
         self._conn_line    = None
+        self._press_pos = None
         self.layout_active = False
         self.layout_timer  = QTimer()
         self.layout_timer.timeout.connect(self._layout_step)
@@ -898,6 +899,19 @@ class GraphScene(QGraphicsScene):
                               label=label if ok else "")
             self.abort_connect()
             return
+
+        if (
+            self._press_pos is not None and
+            QLineF(self._press_pos, event.scenePos()).length() > 5
+        ):
+            self._press_pos = None
+
+            super().mouseReleaseEvent(event)
+            selected = self.selectedItems()
+
+            if len(selected) > 1:
+                return
+            return
         
         if event.button() == Qt.LeftButton:
             items   = self.items(event.scenePos())
@@ -939,7 +953,7 @@ class GraphScene(QGraphicsScene):
                 if not (event.modifiers() & Qt.ControlModifier):
                     self.clearSelection()
                 clicked.setSelected(True)
-                print("BEFORE SUPER:", self.selectedItems())
+                
                 self.edge_selected.emit(clicked)
                 self.node_selected.emit(None)
                 self.group_selected.emit(None)
@@ -956,9 +970,14 @@ class GraphScene(QGraphicsScene):
                 self.node_selected.emit(None)
                 self.edge_selected.emit(None)
                 self.group_selected.emit(None)
-        print("Pre SUPER:", self.selectedItems())
+        
         super().mouseReleaseEvent(event)
-        print("POST SUPER:", self.selectedItems())
+
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_pos = event.scenePos()
+        return super().mousePressEvent(event)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
