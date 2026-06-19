@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView,
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
@@ -1336,6 +1336,16 @@ class FileExplorer(QWidget):
         self._tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self._tree.itemActivated.connect(self._on_item_activated)
         self._tree.setStyleSheet(self._tree_style())
+
+
+        self._init_icons()
+        self._tree.setRootIsDecorated(True)
+        self._tree.setItemsExpandable(True)
+        self._tree.setExpandsOnDoubleClick(True)
+        self._tree.setUniformRowHeights(True)
+        self._tree.itemExpanded.connect(self._update_folder_icon)
+        self._tree.itemCollapsed.connect(self._update_folder_icon)
+
         root_lay.addWidget(self._tree, 1)
 
         # ── Empty-state hint (shown when nothing is loaded) ───────────────────
@@ -1361,6 +1371,7 @@ class FileExplorer(QWidget):
         item = QTreeWidgetItem([os.path.basename(path)])
         item.setData(0, Qt.UserRole, path)
         item.setToolTip(0, path)
+        self._apply_item_visuals(item, False)
         self._tree.addTopLevelItem(item)
         self._tree.expandAll()
         self._hint.hide()
@@ -1375,9 +1386,11 @@ class FileExplorer(QWidget):
         root_item = QTreeWidgetItem([os.path.basename(folder) or folder])
         root_item.setData(0, Qt.UserRole, folder)
         root_item.setToolTip(0, folder)
+        self._apply_item_visuals(root_item, True)
         self._populate(root_item, folder)
         self._tree.addTopLevelItem(root_item)
         root_item.setExpanded(True)
+        self._update_folder_icon(root_item)
         self._hint.hide()
         self._tree.show()
 
@@ -1440,16 +1453,19 @@ class FileExplorer(QWidget):
                 child = QTreeWidgetItem([entry.name])
                 child.setData(0, Qt.UserRole, entry.path)
                 child.setToolTip(0, entry.path)
-                # Check if this sub-dir has any valid content before adding it
+                self._apply_item_visuals(child, True)
+
                 if self._dir_has_content(entry.path):
                     self._populate(child, entry.path)
                     parent_item.addChild(child)
+
             elif entry.is_file():
                 ext = os.path.splitext(entry.name)[1].lower()
                 if ext in SUPPORTED_EXT:
                     child = QTreeWidgetItem([entry.name])
                     child.setData(0, Qt.UserRole, entry.path)
                     child.setToolTip(0, entry.path)
+                    self._apply_item_visuals(child, False)
                     parent_item.addChild(child)
 
     def _dir_has_content(self, folder: str) -> bool:
@@ -1508,12 +1524,48 @@ class FileExplorer(QWidget):
                 f" color:{gc('TEXT_PRIMARY')}; }}")
 
     def _tree_style(self):
-        fs = config.SETTINGS["explorer_font_size"]
         return (
-            f"QTreeWidget {{ background:{gc('BG_PANEL')}; color:{gc('TEXT_PRIMARY')};"
-            f" border:none; font-size: {fs}px; }}"
-            f" QTreeWidget::item {{ padding:4px 6px; border-radius:4px; }}"
-            f" QTreeWidget::item:hover {{ background:{gc('BG_CARD')}; }}"
-            f" QTreeWidget::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
-            f" QTreeWidget::branch {{ background:{gc('BG_PANEL')}; }}"
-        )
+        f"""
+        QTreeWidget {{
+            background:{gc('BG_PANEL')};
+            color:{gc('TEXT_PRIMARY')};
+            border:none;
+            font-size:{config.SETTINGS.get('explorer_font_size', 12)}px;
+            outline:0;
+        }}
+        QTreeWidget::item {{
+            padding:6px 8px;
+            border-radius:6px;
+            min-height:24px;
+        }}
+        QTreeWidget::item:hover {{
+            background:{gc('BG_CARD')};
+        }}
+        QTreeWidget::item:selected {{
+            background:{gc('ACCENT')};
+            color:white;
+        }}
+        QTreeWidget::branch {{
+            background:transparent;
+        }}
+        """
+    )
+
+    def _init_icons(self):
+        self._ico_folder_closed = self.style().standardIcon(QStyle.SP_DirClosedIcon)
+        self._ico_folder_open = self.style().standardIcon(QStyle.SP_DirOpenIcon)
+        self._ico_file = self.style().standardIcon(QStyle.SP_FileIcon)
+
+    def _is_dir_item(self, item: QTreeWidgetItem) -> bool:
+        path = item.data(0, Qt.UserRole)
+        return bool(path and os.path.isdir(path))
+
+    def _apply_item_visuals(self, item: QTreeWidgetItem, is_dir: bool):
+        font = item.font(0)
+        font.setBold(is_dir)
+        item.setFont(0, font)
+        item.setIcon(0, self._ico_folder_closed if is_dir else self._ico_file)
+
+    def _update_folder_icon(self, item: QTreeWidgetItem):
+        if self._is_dir_item(item):
+            item.setIcon(0, self._ico_folder_open if item.isExpanded() else self._ico_folder_closed)
