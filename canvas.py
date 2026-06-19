@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
 )
 # QGraphicsRectItem kept — used for StickyOverlay background pill
 from PyQt5.QtCore import Qt, QPointF, QRectF, QLineF, pyqtSignal, QTimer
-from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath
+from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath,QPainterPathStroker,QTextOption,QFontMetricsF
 
 import config
 from config import gc, qc, new_id
@@ -49,6 +49,13 @@ class EdgeItem(QGraphicsPathItem):
         self._label_item.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
         self._label_item.setDefaultTextColor(QColor(self.color))
         self.update_path()
+
+    def shape(self):
+        """Fat invisible hit-zone so edges are easy to click without
+        needing pixel-precision on the visible line."""
+        stroker = QPainterPathStroker()
+        stroker.setWidth(12)   # 12 scene-units total = ~6px halo each side
+        return stroker.createStroke(self.path())
 
     def set_label(self, text):
         self.label = text
@@ -146,26 +153,18 @@ class EdgeItem(QGraphicsPathItem):
 #  corrupt the layout the way ItemIgnoresTransformations on a child can.
 # ─────────────────────────────────────────────────────────────────────────────
 class StickyOverlay:
-    """Owns a background rect and a text item, both added to the scene."""
+    """Owns only a text item — no background box, no border."""
 
-    GAP   = 14   # scene-unit gap between node edge and label box
-    PAD_X = 8
-    PAD_Y = 5
-    WIDTH = 180
+    GAP   = 10    # scene-unit gap between node edge and text
+    WIDTH = 160   # max text width before wrapping
 
     def __init__(self, scene):
         self._scene = scene
 
-        self._bg = QGraphicsRectItem()
-        self._bg.setAcceptedMouseButtons(Qt.NoButton)
-        self._bg.setZValue(10)
-        self._bg.setVisible(False)
-        scene.addItem(self._bg)
-
         self._txt = QGraphicsTextItem()
         self._txt.setAcceptedMouseButtons(Qt.NoButton)
         self._txt.setTextInteractionFlags(Qt.NoTextInteraction)
-        self._txt.setTextWidth(self.WIDTH)
+        
         self._txt.setZValue(11)
         self._txt.setVisible(False)
         scene.addItem(self._txt)
@@ -174,23 +173,28 @@ class StickyOverlay:
         """Recompute scene position + styling from *node* state."""
         text = node.sticky_text.strip()
         visible = bool(text and node.sticky_visible)
-        self._bg.setVisible(visible)
         self._txt.setVisible(visible)
         if not visible:
             return
 
-        # ── Text styling ──────────────────────────────────────────────────────
+        # ── Binary color scheme: black on light theme, white on dark theme ──
+        text_color = QColor("#111111") if config.CURRENT_THEME == "light" else QColor("#f0f0f0")
         self._txt.setPlainText(text)
         self._txt.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
-        self._txt.setDefaultTextColor(QColor(node.color))
+        self._txt.document().setDefaultTextOption(QTextOption(Qt.AlignHCenter))
+        self._txt.setDefaultTextColor(text_color)
 
-        # ── Position in scene space ───────────────────────────────────────────
-        # node.scenePos() is the centre of the circle in scene coords
+        fm = QFontMetricsF(self._txt.font())
+        lines = text.split("\n")
+        content_w = max(fm.horizontalAdvance(line) for line in lines)
+        content_w = min(content_w, self.WIDTH)   # never exceed wrap width
+
+        # ── Position in scene space, centered tight against the node ──────────
         cx = node.scenePos().x()
         cy = node.scenePos().y()
         r  = node.radius
-        br = self._txt.boundingRect()   # text bounding rect in its own space
-        w  = br.width()
+        br = self._txt.boundingRect()
+        w  = content_w
         h  = br.height()
         g  = self.GAP
 
@@ -210,21 +214,8 @@ class StickyOverlay:
 
         self._txt.setPos(tx, ty)
 
-        # ── Background pill ───────────────────────────────────────────────────
-        px, py = self.PAD_X, self.PAD_Y
-        bg_color = QColor(node.color)
-        bg_color.setAlpha(30)
-        border_color = QColor(node.color)
-        border_color.setAlpha(90)
-
-        self._bg.setRect(QRectF(tx - px, ty - py, w + px * 2, h + py * 2))
-        self._bg.setBrush(QBrush(bg_color))
-        self._bg.setPen(QPen(border_color, 1.0, Qt.DashLine))
-
     def remove(self):
-        """Remove both items from the scene (call when node is deleted)."""
-        if self._bg.scene():
-            self._scene.removeItem(self._bg)
+        """Remove the text item from the scene (call when node is deleted)."""
         if self._txt.scene():
             self._scene.removeItem(self._txt)
 
@@ -264,7 +255,7 @@ class NodeItem(QGraphicsItem):
         # is expensive; 30ms after the last position change is imperceptible.
         self._sticky_timer = QTimer()
         self._sticky_timer.setSingleShot(True)
-        self._sticky_timer.setInterval(30)
+        self._sticky_timer.setInterval(2)
         self._sticky_timer.timeout.connect(self._refresh_sticky)
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
