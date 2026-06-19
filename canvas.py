@@ -488,7 +488,11 @@ class NodeGroup(QGraphicsItem):
     """
 
     CORNER_R = 12
-    PAD      = 24   # padding around member bounding-boxes
+    PAD      = 24
+    HANDLE_R = 5
+    _TL, _TC, _TR = 0, 1, 2
+    _ML,      _MR = 3,    4
+    _BL, _BC, _BR = 5, 6, 7  # padding around member bounding-boxes
 
     def __init__(self, group_id=None, name="Group", color=None, member_ids=None):
         super().__init__()
@@ -496,6 +500,11 @@ class NodeGroup(QGraphicsItem):
         self.name       = name
         self.color      = color or "#6c63ff"
         self.member_ids = list(member_ids or [])
+        # ── resize state (new) ──
+        self._resizing         = False
+        self._drag_handle      = None
+        self._drag_start_pos   = None
+        self._drag_start_rect  = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -523,34 +532,137 @@ class NodeGroup(QGraphicsItem):
         self._rect = QRectF(0, 0, max_x - min_x, max_y - min_y)
 
     def boundingRect(self):
-        return self._rect.adjusted(-2, -2, 2, 2)
+        extra = self.HANDLE_R + 2 if self._resizing else 2
+        return self._rect.adjusted(-extra, -extra, extra, extra)
+    
+    def enter_resize_mode(self):
+        self._resizing = True
+        self.setFlag(QGraphicsItem.ItemIsMovable, False)
+        self.prepareGeometryChange()
+        self.update()
+        self.setCursor(Qt.SizeAllCursor)
+
+    def leave_resize_mode(self):
+        self._resizing = False
+        self._drag_handle = None
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.prepareGeometryChange()
+        self.update()
+        self.unsetCursor()
+        if self.scene():
+            self.scene().graph_changed.emit()
+
+    def _handle_points(self):
+        r = self._rect
+        cx, cy = r.center().x(), r.center().y()
+        return [
+            QPointF(r.left(),  r.top()), QPointF(cx, r.top()), QPointF(r.right(), r.top()),
+            QPointF(r.left(),  cy),                            QPointF(r.right(), cy),
+            QPointF(r.left(),  r.bottom()), QPointF(cx, r.bottom()), QPointF(r.right(), r.bottom()),
+        ]
+
+    def _handle_cursor(self, idx):
+        cursors = {
+            self._TL: Qt.SizeFDiagCursor, self._BR: Qt.SizeFDiagCursor,
+            self._TR: Qt.SizeBDiagCursor, self._BL: Qt.SizeBDiagCursor,
+            self._TC: Qt.SizeVerCursor,   self._BC: Qt.SizeVerCursor,
+            self._ML: Qt.SizeHorCursor,   self._MR: Qt.SizeHorCursor,
+        }
+        return cursors.get(idx, Qt.SizeAllCursor)
+
+    def _hit_handle(self, pos):
+        r2 = (self.HANDLE_R + 3) ** 2
+        for i, hp in enumerate(self._handle_points()):
+            dx, dy = pos.x() - hp.x(), pos.y() - hp.y()
+            if dx * dx + dy * dy <= r2:
+                return i
+        return -1
+
+    def mousePressEvent(self, event):
+        if self._resizing and event.button() == Qt.LeftButton:
+            idx = self._hit_handle(event.pos())
+            if idx >= 0:
+                self._drag_handle     = idx
+                self._drag_start_pos  = event.scenePos()
+                self._drag_start_rect = QRectF(self._rect)
+            else:
+                self.leave_resize_mode()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resizing:
+            idx = self._hit_handle(event.pos())
+            self.setCursor(self._handle_cursor(idx) if idx >= 0 else Qt.ArrowCursor)
+
+            if self._drag_handle is not None and self._drag_start_pos is not None:
+                delta = event.scenePos() - self._drag_start_pos
+                dx, dy = delta.x(), delta.y()
+                r = QRectF(self._drag_start_rect)
+                h = self._drag_handle
+                MIN = 40
+                if h in (self._TL, self._TC, self._TR):
+                    nt = r.top() + dy
+                    if r.bottom() - nt >= MIN: r.setTop(nt)
+                if h in (self._BL, self._BC, self._BR):
+                    nb = r.bottom() + dy
+                    if nb - r.top() >= MIN: r.setBottom(nb)
+                if h in (self._TL, self._ML, self._BL):
+                    nl = r.left() + dx
+                    if r.right() - nl >= MIN: r.setLeft(nl)
+                if h in (self._TR, self._MR, self._BR):
+                    nr = r.right() + dx
+                    if nr - r.left() >= MIN: r.setRight(nr)
+
+                self.prepareGeometryChange()
+                self._rect = r
+                self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resizing and self._drag_handle is not None:
+            self._drag_handle = self._drag_start_pos = self._drag_start_rect = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if self._resizing and event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape):
+            self.leave_resize_mode()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
         col = QColor(self.color)
 
-        # Fill
-        fill = QColor(col)
-        fill.setAlpha(25 if self.isSelected() else 15)
-        painter.setBrush(QBrush(fill))
+        painter.setBrush(Qt.NoBrush)   # fully transparent — was a translucent fill
 
-        # Border
         border = QColor(col)
-        border.setAlpha(160 if self.isSelected() else 80)
-        pen = QPen(border, 1.8 if self.isSelected() else 1.2, Qt.DashLine)
+        border.setAlpha(180 if self.isSelected() or self._resizing else 100)
+        pen_width = 2.0 if self.isSelected() or self._resizing else 1.4
+        pen = QPen(border, pen_width, Qt.SolidLine if self._resizing else Qt.DashLine)
         painter.setPen(pen)
         painter.drawRoundedRect(self._rect, self.CORNER_R, self.CORNER_R)
 
-        # Title
-        painter.setPen(QPen(border.lighter(130)))
+        title_col = QColor(col); title_col.setAlpha(200)
+        painter.setPen(QPen(title_col))
         f = QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1, QFont.Bold)
         painter.setFont(f)
         painter.drawText(
-            QRectF(self._rect.x() + 10, self._rect.y() + 6,
-                   self._rect.width() - 20, 20),
-            Qt.AlignLeft | Qt.AlignVCenter,
-            self.name,
+            QRectF(self._rect.x() + 10, self._rect.y() + 6, self._rect.width() - 20, 20),
+            Qt.AlignLeft | Qt.AlignVCenter, self.name,
         )
+
+        if self._resizing:
+            painter.setPen(QPen(col, 1.5))
+            painter.setBrush(QBrush(QColor(255, 255, 255, 200)))
+            for hp in self._handle_points():
+                painter.drawEllipse(hp, self.HANDLE_R, self.HANDLE_R)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
@@ -566,12 +678,9 @@ class NodeGroup(QGraphicsItem):
 
     def to_dict(self):
         return {
-            "id":      self.group_id,
-            "name":    self.name,
-            "color":   self.color,
-            "members": list(self.member_ids),
-            "x":       self.x(),
-            "y":       self.y(),
+            "id": self.group_id, "name": self.name, "color": self.color,
+            "members": list(self.member_ids), "x": self.x(), "y": self.y(),
+            "w": self._rect.width(), "h": self._rect.height(),   # new
         }
 
 
@@ -850,7 +959,12 @@ class GraphScene(QGraphicsScene):
                     color=gd.get("color"),
                     member_ids=gd.get("members", []),
                 )
-                g.fit_to_members(members)
+                if "w" in gd and "h" in gd:
+                    g.prepareGeometryChange()
+                    g.setPos(gd.get("x", 0), gd.get("y", 0))
+                    g._rect = QRectF(0, 0, gd["w"], gd["h"])
+                else:
+                    g.fit_to_members(members)
                 self.groups[g.group_id] = g
                 self.addItem(g)
 
@@ -1310,6 +1424,7 @@ class CanvasView(QGraphicsView):
         elif group:
             a_rename  = menu.addAction("✏️  Rename group")
             a_col     = menu.addAction("🎨  Change group colour")
+            a_resize = menu.addAction("⤢  Resize group")
             a_sel_mem = menu.addAction("☑️  Select all members")
             menu.addSeparator()
             a_ungroup = menu.addAction("⬡  Ungroup  (Ctrl+Shift+G)")
@@ -1337,6 +1452,11 @@ class CanvasView(QGraphicsView):
                         node.setSelected(True)
             elif ch == a_ungroup:
                 self.scene().ungroup(group)
+            elif ch == a_resize:
+                self.scene().clearSelection()
+                group.setSelected(True)
+                group.enter_resize_mode()
+                group.setFocus()
 
         # ── Canvas-text context ───────────────────────────────────────────────
         elif ctext:
