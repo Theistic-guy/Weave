@@ -62,6 +62,7 @@ SETTINGS = {
     "default_node_type": "default",
     "default_edge_type": "relationship",
     "default_direction": "→",
+    "explorer_font_size" : 12
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

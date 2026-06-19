@@ -1396,6 +1396,35 @@ class FileExplorer(QWidget):
         self._collapsed = val
         self._sync_visibility()
 
+    def wheelEvent(self, event):
+
+        if event.modifiers() & Qt.ControlModifier:
+
+            step = 1 if event.angleDelta().y() > 0 else -1
+
+            config.SETTINGS["explorer_font_size"] = max(
+                8,
+                min(
+                    24,
+                    config.SETTINGS["explorer_font_size"] + step
+                )
+            )
+
+            self.apply_style()
+
+            event.accept()
+            return
+
+        super().wheelEvent(event)
+
+    def mousePressEvent(self, event):
+        if self._collapsed and event.button() == Qt.LeftButton:
+            self.set_collapsed(False)
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
     # ── Internal ──────────────────────────────────────────────────────────────
     def _populate(self, parent_item: QTreeWidgetItem, folder: str):
         """Recursively add sub-folders and supported files under parent_item."""
@@ -1479,9 +1508,10 @@ class FileExplorer(QWidget):
                 f" color:{gc('TEXT_PRIMARY')}; }}")
 
     def _tree_style(self):
+        fs = config.SETTINGS["explorer_font_size"]
         return (
             f"QTreeWidget {{ background:{gc('BG_PANEL')}; color:{gc('TEXT_PRIMARY')};"
-            f" border:none; font-size:12px; }}"
+            f" border:none; font-size: {fs}px; }}"
             f" QTreeWidget::item {{ padding:4px 6px; border-radius:4px; }}"
             f" QTreeWidget::item:hover {{ background:{gc('BG_CARD')}; }}"
             f" QTreeWidget::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
