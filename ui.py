@@ -1386,7 +1386,9 @@ class FileExplorer(QWidget):
         root_item = QTreeWidgetItem([os.path.basename(folder) or folder])
         root_item.setData(0, Qt.UserRole, folder)
         root_item.setToolTip(0, folder)
+        self._store_item_name(root_item, os.path.basename(folder) or folder)
         self._apply_item_visuals(root_item, True)
+        self._set_folder_label(root_item, True)
         self._populate(root_item, folder)
         self._tree.addTopLevelItem(root_item)
         root_item.setExpanded(True)
@@ -1453,7 +1455,10 @@ class FileExplorer(QWidget):
                 child = QTreeWidgetItem([entry.name])
                 child.setData(0, Qt.UserRole, entry.path)
                 child.setToolTip(0, entry.path)
+                self._store_item_name(child, entry.name)
                 self._apply_item_visuals(child, True)
+                self._set_folder_label(child, False)
+                
 
                 if self._dir_has_content(entry.path):
                     self._populate(child, entry.path)
@@ -1568,4 +1573,16 @@ class FileExplorer(QWidget):
 
     def _update_folder_icon(self, item: QTreeWidgetItem):
         if self._is_dir_item(item):
-            item.setIcon(0, self._ico_folder_open if item.isExpanded() else self._ico_folder_closed)
+             self._set_folder_label(item, item.isExpanded())
+    
+    def _set_folder_label(self, item: QTreeWidgetItem, expanded: bool):
+        path = item.data(0, Qt.UserRole)
+        if not path or not os.path.isdir(path):
+            return
+
+        name = item.data(0, Qt.UserRole + 1) or item.text(0).lstrip("▸▾▶▼ ").strip()
+        chevron = "▾" if expanded else "▸"
+        item.setText(0, f"{chevron} {name}")
+    
+    def _store_item_name(self, item: QTreeWidgetItem, name: str):
+        item.setData(0, Qt.UserRole + 1, name)

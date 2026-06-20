@@ -227,7 +227,7 @@ class NodeItem(QGraphicsItem):
     def __init__(self, node_id=None, label="Node", x=0, y=0,
                  node_type="default", color=None, properties=None,
                  notes="", sticky_text="", sticky_visible=False,
-                 sticky_dock="right"):
+                 sticky_dock="right",node_label_dock="right"):
         super().__init__()
         self.node_id    = node_id or new_id()
         self.label      = label
@@ -239,6 +239,7 @@ class NodeItem(QGraphicsItem):
         self.sticky_text    = sticky_text
         self.sticky_visible = sticky_visible
         self.sticky_dock    = sticky_dock
+        self.node_label_dock = node_label_dock
         self.edges  = []
         self.radius = 14
 
@@ -286,7 +287,27 @@ class NodeItem(QGraphicsItem):
         QFont("Segoe UI", max(1, int(round(effective_pt))), QFont.Medium)
         self._text.setDefaultTextColor(QColor(self.color))
         br = self._text.boundingRect()
-        self._text.setPos(self.radius + 5, -br.height() / 2)
+        br = self._text.boundingRect()
+        w = br.width()
+        h = br.height()
+        g = 5
+
+        dock = self.node_label_dock
+
+        if dock == "left":
+            x = -self.radius - g - w
+            y = -h / 2
+        elif dock == "above":
+            x = -w / 2
+            y = -self.radius - g - h
+        elif dock == "below":
+            x = -w / 2
+            y = self.radius + g
+        else:  # right (default)
+            x = self.radius + g
+            y = -h / 2
+
+        self._text.setPos(x, y)
         self._refresh_sticky()
 
     def update_label_scale(self, view_scale: float):
@@ -408,6 +429,7 @@ class NodeItem(QGraphicsItem):
             "sticky_text":    self.sticky_text,
             "sticky_visible": self.sticky_visible,
             "sticky_dock":    self.sticky_dock,
+            "node_label_dock": self.node_label_dock,
         }
 
 
@@ -758,14 +780,14 @@ class GraphScene(QGraphicsScene):
     def add_node(self, label="Node", x=0, y=0, node_type=None,
                  color=None, properties=None, node_id=None,
                  notes="", sticky_text="", sticky_visible=False,
-                 sticky_dock="right"):
+                 sticky_dock="right",node_label_dock="right"):
         nt = node_type or config.SETTINGS["default_node_type"]
         if nt not in config.NODE_TYPE_COLORS:
             nt = next(iter(config.NODE_TYPE_COLORS), "default")
         n = NodeItem(node_id=node_id, label=label, x=x, y=y,
                      node_type=nt, color=color, properties=properties,
                      notes=notes, sticky_text=sticky_text,
-                     sticky_visible=sticky_visible, sticky_dock=sticky_dock)
+                     sticky_visible=sticky_visible, sticky_dock=sticky_dock,node_label_dock=node_label_dock)
         self.nodes[n.node_id] = n
         self.addItem(n)
         # StickyOverlay must be created AFTER addItem so the scene is available
@@ -925,6 +947,7 @@ class GraphScene(QGraphicsScene):
                 sticky_text=nd.get("sticky_text", ""),
                 sticky_visible=nd.get("sticky_visible", False),
                 sticky_dock=nd.get("sticky_dock", "right"),
+                node_label_dock = nd.get("node_label_dock","right")
             )
         for ed in data.get("edges", []):
             s = self.nodes.get(ed["source"])
@@ -1387,6 +1410,20 @@ class CanvasView(QGraphicsView):
                 a_conn  = menu.addAction("🔗  Connect from here")
                 a_edit  = menu.addAction("✏️  Rename")
                 a_col   = menu.addAction("🎨  Change colour")
+                label_menu = menu.addMenu("🏷️ Label")
+                act_left  = label_menu.addAction("Left")
+                act_right = label_menu.addAction("Right")
+                act_above = label_menu.addAction("Above")
+                act_below = label_menu.addAction("Below")
+                for act in [act_left, act_right, act_above, act_below]:
+                    act.setCheckable(True)
+
+                {
+                    "left": act_left,
+                    "right": act_right,
+                    "above": act_above,
+                    "below": act_below,
+                }[node.node_label_dock].setChecked(True)
                 menu.addSeparator()
                 a_copy  = menu.addAction("📋  Copy  (Ctrl+C)")
                 menu.addSeparator()
@@ -1413,6 +1450,25 @@ class CanvasView(QGraphicsView):
                 if c.isValid():
                     node.color = c.name(); node._refresh_text()
                     self.scene().update(); self.scene().graph_changed.emit()
+            elif ch == act_left:
+                node.node_label_dock = "left"
+                node._refresh_text()
+                self.scene().graph_changed.emit()
+
+            elif ch == act_right:
+                node.node_label_dock = "right"
+                node._refresh_text()
+                self.scene().graph_changed.emit()
+
+            elif ch == act_above:
+                node.node_label_dock = "above"
+                node._refresh_text()
+                self.scene().graph_changed.emit()
+
+            elif ch == act_below:
+                node.node_label_dock = "below"
+                node._refresh_text()
+                self.scene().graph_changed.emit()
             elif ch == a_copy:
                 self._copy_selected()
             elif ch == a_del:
