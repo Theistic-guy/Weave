@@ -836,6 +836,9 @@ class SettingsDialog(QDialog):
         self.temp_schema   = copy.deepcopy(config.PROPERTY_SCHEMA)
         self.temp_settings = copy.deepcopy(config.SETTINGS)
 
+        self._node_type_renames = {}
+        self._edge_type_renames = {}
+
         self._apply_base_style()
 
         main_lay = QVBoxLayout(self)
@@ -1020,6 +1023,14 @@ class SettingsDialog(QDialog):
         self.temp_colors[new] = self.temp_colors.pop(old)
         if old in self.temp_schema:
             self.temp_schema[new] = self.temp_schema.pop(old)
+
+        for k, v in list(self._node_type_renames.items()):
+            if v == old:
+                self._node_type_renames[k] = new
+
+        self._node_type_renames[old] = new
+    
+
         # Update list item display
         item.setText(new); item.setData(Qt.UserRole, new)
         # Update defaults combo
@@ -1086,7 +1097,16 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Duplicate",
                 f"An edge type named '{new}' already exists.\nChoose a different name."); return
         self.temp_edges[new] = self.temp_edges.pop(old)
-        item.setText(new); item.setData(Qt.UserRole, new)
+
+        for k, v in list(self._edge_type_renames.items()):
+            if v == old:
+                self._edge_type_renames[k] = new
+
+        self._edge_type_renames[old] = new
+        
+        
+        item.setText(new)
+        item.setData(Qt.UserRole, new)
         idx = self.def_edge_type.findText(old)
         if idx >= 0:
             self.def_edge_type.setItemText(idx, new)
@@ -1202,6 +1222,11 @@ class SettingsDialog(QDialog):
         config.PROPERTY_SCHEMA.clear();  config.PROPERTY_SCHEMA.update(self.temp_schema)
         config.SETTINGS.update(self.temp_settings)
 
+
+        for node in self.scene.nodes.values():
+            if node.node_type in self._node_type_renames:
+                node.node_type = self._node_type_renames[node.node_type]
+
         # Propagate schema changes + colour changes to existing nodes
         for node in self.scene.nodes.values():
             uni_old  = old_schema.get("__universal__", [])
@@ -1225,6 +1250,10 @@ class SettingsDialog(QDialog):
             node.color = config.NODE_TYPE_COLORS.get(node.node_type, node.color)
             node._refresh_text()
             node.update()
+
+        for edge in self.scene.edges.values():
+            if edge.edge_type in self._edge_type_renames:
+                edge.edge_type = self._edge_type_renames[edge.edge_type]
 
         # Sync edge colours
         for edge in self.scene.edges.values():

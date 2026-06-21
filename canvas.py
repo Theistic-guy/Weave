@@ -284,30 +284,10 @@ class NodeItem(QGraphicsItem):
 
         self._text.setVisible(True)
         self._text.setPlainText(self.label)
-        QFont("Segoe UI", max(1, int(round(effective_pt))), QFont.Medium)
+        font = QFont("Segoe UI", max(1, int(round(effective_pt))), QFont.Medium)
+        self._text.setFont(font) #That is why setFont() must happen before you measure w and h.
         self._text.setDefaultTextColor(QColor(self.color))
-        br = self._text.boundingRect()
-        br = self._text.boundingRect()
-        w = br.width()
-        h = br.height()
-        g = 5
-
-        dock = self.node_label_dock
-
-        if dock == "left":
-            x = -self.radius - g - w
-            y = -h / 2
-        elif dock == "above":
-            x = -w / 2
-            y = -self.radius - g - h
-        elif dock == "below":
-            x = -w / 2
-            y = self.radius + g
-        else:  # right (default)
-            x = self.radius + g
-            y = -h / 2
-
-        self._text.setPos(x, y)
+        self._update_label_position()
         self._refresh_sticky()
 
     def update_label_scale(self, view_scale: float):
@@ -324,8 +304,30 @@ class NodeItem(QGraphicsItem):
                 QFont.Medium
             )
             self._text.setFont(f)
-            br = self._text.boundingRect()
-            self._text.setPos(self.radius + 5, -br.height() / 2)
+            self._update_label_position()
+
+    def _update_label_position(self):
+        br = self._text.boundingRect()
+        w = br.width()
+        h = br.height()
+        g = 5
+
+        dock = self.node_label_dock
+
+        if dock == "left":
+            x = -self.radius - g - w
+            y = -h / 2
+        elif dock == "above":
+            x = -w / 2
+            y = -self.radius - g - h
+        elif dock == "below":
+            x = -w / 2
+            y = self.radius + g
+        else:
+            x = self.radius + g
+            y = -h / 2
+
+        self._text.setPos(x, y)
 
     def _refresh_sticky(self):
         if self._sticky is not None:
@@ -796,14 +798,32 @@ class GraphScene(QGraphicsScene):
         self.graph_changed.emit()
         return n
 
+
     def delete_node(self, node):
         for e in list(node.edges):
             self.delete_edge(e)
+
+        for item in self.items():
+            if isinstance(item, NodeGroup) and node.node_id in item.member_ids:
+                item.member_ids = [nid for nid in item.member_ids if nid != node.node_id]
+                item.update()
+
         if node._sticky is not None:
             node._sticky.remove()
             node._sticky = None
+
+        # If this node was selected / being inspected, clear the selection state
+        was_selected = node.isSelected()
+
         self.nodes.pop(node.node_id, None)
         self.removeItem(node)
+
+        if was_selected:
+            self.clearSelection()
+            self.node_selected.emit(None)
+            self.edge_selected.emit(None)
+            self.group_selected.emit(None)
+
         self.graph_changed.emit()
 
     def add_edge(self, src, tgt, label="", edge_id=None,
@@ -812,10 +832,17 @@ class GraphScene(QGraphicsScene):
         edge_type = edge_type or config.SETTINGS["default_edge_type"]
         if edge_type not in config.EDGE_TYPE_COLORS:
             edge_type = next(iter(config.EDGE_TYPE_COLORS), "relationship")
-        for e in src.edges:
-            if (e.source_node is src and e.target_node is tgt
-                    and e.direction == direction):
-                return None
+        for e in self.edges.values():
+            same_pair = (e.source_node is src and e.target_node is tgt)
+            reverse_pair = (e.source_node is tgt and e.target_node is src)
+
+            if e.direction == direction:
+                if direction in ("—", "↔"):
+                    if same_pair or reverse_pair:
+                        return None
+                else:
+                    if same_pair:
+                        return None
         e = EdgeItem(src, tgt, label=label, edge_id=edge_id,
                      direction=direction, edge_type=edge_type, color=color,
                      line_style=line_style)
@@ -913,6 +940,10 @@ class GraphScene(QGraphicsScene):
         }
 
     def load_dict(self, data):
+
+        #NOTE: prevents a lingering connecting state if file (re)load occurrs
+        self.abort_connect()
+
         # Remove sticky overlays before scene.clear()
         for node in list(self.nodes.values()):
             if node._sticky is not None:
@@ -1106,6 +1137,25 @@ class GraphScene(QGraphicsScene):
         if event.button() == Qt.LeftButton:
             self._press_pos = event.scenePos()
         return super().mousePressEvent(event)
+
+    def iter_nodes(self):
+        return self.nodes.values()
+
+    def iter_edges(self):
+        return self.edges.values()
+    
+    def rename_node_type_everywhere(self, old_type, new_type):
+        for node in self.iter_nodes():
+            if node.node_type == old_type:
+                node.node_type = new_type
+                node._inject_schema()
+                node._refresh_text()
+
+
+    def rename_edge_type_everywhere(self, old_type, new_type):
+        for edge in self.iter_edges():
+            if edge.edge_type == old_type:
+                edge.set_edge_type(new_type)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1346,6 +1396,7 @@ class CanvasView(QGraphicsView):
                 sticky_text=nd.get("sticky_text", ""),
                 sticky_visible=nd.get("sticky_visible", False),
                 sticky_dock=nd.get("sticky_dock", "right"),
+                node_label_dock = nd.get("node_label_dock","right")
             )
             id_map[nd["id"]] = new_node
             new_node.setSelected(True)
