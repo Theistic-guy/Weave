@@ -907,10 +907,9 @@ class SettingsDialog(QDialog):
         gfl = QFormLayout(grp_font)
         self.ui_font_spin = QSpinBox(); self.ui_font_spin.setRange(7, 24)
         self.ui_font_spin.setValue(self.temp_settings["ui_font_size"])
-        self.sb_font_spin = QSpinBox(); self.sb_font_spin.setRange(8, 24)
-        self.sb_font_spin.setValue(self.temp_settings["sidebar_font_size"])
+        
         gfl.addRow("Canvas label size:", self.ui_font_spin)
-        gfl.addRow("Sidebar font size:", self.sb_font_spin)
+       
         lay.addWidget(grp_font)
 
         grp_def = QGroupBox("Defaults for New Nodes / Edges")
