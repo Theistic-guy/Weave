@@ -1198,7 +1198,6 @@ class SettingsDialog(QDialog):
     # ── Apply helpers ─────────────────────────────────────────────────────────
     def _collect_settings(self):
         self.temp_settings["ui_font_size"]      = self.ui_font_spin.value()
-        self.temp_settings["sidebar_font_size"] = self.sb_font_spin.value()
         self.temp_settings["default_node_type"] = self.def_node_type.currentText()
         self.temp_settings["default_edge_type"] = self.def_edge_type.currentText()
         self.temp_settings["default_direction"] = self.def_direction.currentText()
