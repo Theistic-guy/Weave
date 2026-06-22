@@ -1052,10 +1052,14 @@ class GraphScene(QGraphicsScene):
                 None,
             )
             if tgt:
-                label, ok = QInputDialog.getText(
-                    None, "Edge Label", "Label (optional):")
+                label = ""
+                if config.SETTINGS.get("ask_edge_label_before_add", True ):
+                    label, ok = QInputDialog.getText(
+                        None, "Edge Label", "Label (optional):")
+                    if not ok:
+                        label = ""
                 self.add_edge(self._conn_source, tgt,
-                              label=label if ok else "")
+                                label=label)
             self.abort_connect()
             return
 

@@ -780,11 +780,14 @@ class SearchBar(QWidget):
         return False
 
     def apply_style(self):
-        sf = config.SETTINGS["sidebar_font_size"]
+        sf = config.SETTINGS["app_ui_font_size"]
         self.setStyleSheet(
             f"background:{gc('BG_PANEL')}; border-bottom:1px solid {gc('BORDER')};")
         self.icon.setStyleSheet("font-size:14px; background:transparent; border:none;")
-        self.edit.setStyleSheet(_inp_ss())
+        self.edit.setStyleSheet(f"QLineEdit {{ background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')};"
+            f" border:1px solid {gc('BORDER')}; border-radius:6px;"
+            f" padding:5px 9px; font-size:{sf}px; }}"
+            f" QLineEdit:focus {{ border-color:{gc('ACCENT')}; }}")
         bss = (f"QPushButton {{ background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')};"
                f" border:1px solid {gc('BORDER')}; border-radius:4px; }}"
                f" QPushButton:hover {{ background:{gc('ACCENT')}; color:white; }}")
@@ -800,10 +803,33 @@ class SearchBar(QWidget):
             node.setSelected(False)
         if text:
             for node in self.scene.nodes.values():
-                if (text in node.label.lower()
-                        or any(text in str(v).lower()
-                               for v in node.properties.values())):
-                    self._matches.append(node); node.setSelected(True)
+                match = text in node.label.lower()
+                if (
+                    not match
+                    and config.SETTINGS["search_properties"]
+                ):
+                    match = any(
+                        text in str(k).lower()
+                        or text in str(v).lower()
+                        for k, v in node.properties.items()
+                    )
+
+                if (
+                    not match
+                    and config.SETTINGS["search_notes"]
+                ):
+                    match = text in (node.notes or "").lower()
+
+                if (
+                    not match
+                    and config.SETTINGS["search_sticky_text"]
+                ):
+                    match = text in (node.sticky_text or "").lower()
+
+                if match:
+                    self._matches.append(node)
+                    node.setSelected(True)
+
             if self._matches:
                 self._centre_on(0)
             else:
@@ -827,8 +853,8 @@ class SettingsDialog(QDialog):
         self.scene = scene
         self.setWindowTitle("Settings")
         # Boosted minimum sizes to fix clipped text on buttons
-        self.setMinimumSize(650, 520)
-        self.resize(780, 580)
+        self.setMinimumSize(650, 620)
+        self.resize(780, 620)
 
         # Deep copies — nothing touches global state until Save
         self.temp_colors   = copy.deepcopy(config.NODE_TYPE_COLORS)
@@ -907,8 +933,15 @@ class SettingsDialog(QDialog):
         gfl = QFormLayout(grp_font)
         self.ui_font_spin = QSpinBox(); self.ui_font_spin.setRange(7, 24)
         self.ui_font_spin.setValue(self.temp_settings["ui_font_size"])
+        self.app_ui_spin = QSpinBox()
+        self.app_ui_spin.setRange(8, 24)
+        self.app_ui_spin.setValue(
+            config.SETTINGS["app_ui_font_size"]
+        )
         
-        gfl.addRow("Canvas label size:", self.ui_font_spin)
+        gfl.addRow("Canvas Text size:", self.ui_font_spin)
+
+        gfl.addRow("App UI Size", self.app_ui_spin)
        
         lay.addWidget(grp_font)
 
@@ -927,6 +960,44 @@ class SettingsDialog(QDialog):
         gdl.addRow("Default edge type:", self.def_edge_type)
         gdl.addRow("Default direction:", self.def_direction)
         lay.addWidget(grp_def)
+
+        grp_pref = QGroupBox("Preferences")
+        vbox_pref = QVBoxLayout(grp_pref)
+        pref_form = QFormLayout()
+        self.ask_edge_label_chk = QCheckBox(
+        )
+        self.ask_edge_label_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
+
+        self.ask_edge_label_chk.setChecked(
+            config.SETTINGS.get(
+                "ask_edge_label_before_add",
+                False
+            )
+        )
+        pref_form.addRow("Ask edge label before adding new edge:", self.ask_edge_label_chk)
+
+        grp_search_in = QGroupBox("Search In")
+        gdl_search_in = QFormLayout(grp_search_in)
+        self.search_properties_chk = QCheckBox("Search properties")
+        self.search_notes_chk      = QCheckBox("Search notes")
+        self.search_sticky_chk     = QCheckBox("Search sticky text")
+        self.search_properties_chk.setChecked(
+            config.SETTINGS["search_properties"]
+        )
+
+        self.search_notes_chk.setChecked(
+            config.SETTINGS["search_notes"]
+        )
+
+        self.search_sticky_chk.setChecked(
+            config.SETTINGS["search_sticky_text"]
+        )
+        gdl_search_in.addRow(self.search_properties_chk)
+        gdl_search_in.addRow(self.search_notes_chk)
+        gdl_search_in.addRow(self.search_sticky_chk)
+        vbox_pref.addLayout(pref_form)
+        vbox_pref.addWidget(grp_search_in)
+        lay.addWidget(grp_pref)
         lay.addStretch()
         return w
 
@@ -1198,9 +1269,26 @@ class SettingsDialog(QDialog):
     # ── Apply helpers ─────────────────────────────────────────────────────────
     def _collect_settings(self):
         self.temp_settings["ui_font_size"]      = self.ui_font_spin.value()
+        self.temp_settings["app_ui_font_size"] = (
+            self.app_ui_spin.value()
+        )
         self.temp_settings["default_node_type"] = self.def_node_type.currentText()
         self.temp_settings["default_edge_type"] = self.def_edge_type.currentText()
         self.temp_settings["default_direction"] = self.def_direction.currentText()
+        self.temp_settings["ask_edge_label_before_add"] = (
+            self.ask_edge_label_chk.isChecked()
+        )
+        self.temp_settings["search_properties"] = (
+            self.search_properties_chk.isChecked()
+        )
+
+        self.temp_settings["search_notes"] = (
+            self.search_notes_chk.isChecked()
+        )
+
+        self.temp_settings["search_sticky_text"] = (
+            self.search_sticky_chk.isChecked()
+        )
         # Guard against stale defaults
         if self.temp_settings["default_node_type"] not in self.temp_colors:
             self.temp_settings["default_node_type"] = next(iter(self.temp_colors), "default")
@@ -1219,6 +1307,7 @@ class SettingsDialog(QDialog):
         config.EDGE_TYPE_COLORS.clear(); config.EDGE_TYPE_COLORS.update(self.temp_edges)
         config.PROPERTY_SCHEMA.clear();  config.PROPERTY_SCHEMA.update(self.temp_schema)
         config.SETTINGS.update(self.temp_settings)
+        
 
 
         for node in self.scene.nodes.values():

@@ -64,7 +64,8 @@ class MainWindow(QMainWindow):
 
     # ── Style ─────────────────────────────────────────────────────────────────
     def _apply_global_style(self):
-        sf = config.SETTINGS["ui_font_size"]
+        
+        app_ui_size = config.SETTINGS["app_ui_font_size"]
         self.setStyleSheet(f"""
             QMainWindow {{ background:{gc('BG_DARK')}; }}
             QToolBar {{
@@ -73,7 +74,7 @@ class MainWindow(QMainWindow):
             }}
             QToolBar QToolButton {{
                 background:transparent; color:{gc('TEXT_PRIMARY')}; border:none;
-                border-radius:6px; padding:5px 10px; font-size:{sf+1}px;
+                border-radius:6px; padding:5px 10px; font-size:{app_ui_size}px;
             }}
             QToolBar QToolButton:hover   {{ background:{gc('BG_CARD')}; }}
             QToolBar QToolButton:pressed {{ background:{gc('ACCENT')}; color:white; }}
@@ -83,7 +84,7 @@ class MainWindow(QMainWindow):
             }}
             QFrame#TopToolbar QToolButton {{
                 background:transparent; color:{gc('TEXT_PRIMARY')}; border:none;
-                border-radius:6px; padding:5px 10px; font-size:{sf+1}px;
+                border-radius:6px; padding:5px 10px; font-size:{app_ui_size+1}px;
             }}
             QFrame#TopToolbar QToolButton:hover {{ background:{gc('BG_CARD')}; }}
             QFrame#TopToolbar QToolButton:pressed {{ background:{gc('ACCENT')}; color:white; }}
@@ -93,7 +94,7 @@ class MainWindow(QMainWindow):
             }}
             QStatusBar {{
                 background:{gc('BG_PANEL')}; color:{gc('TEXT_MUTED')};
-                font-size:{sf}px;
+                font-size:{app_ui_size}px;
             }}
             QSplitter::handle {{ background:{gc('BORDER')}; width:1px; }}
         """)
@@ -508,8 +509,8 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self, self.scene)
         if dlg.exec_():
-            QApplication.instance().setFont(
-                QFont("Segoe UI", config.SETTINGS["ui_font_size"]))
+            # QApplication.instance().setFont(
+            #     QFont("Segoe UI", config.SETTINGS["app_ui_font_size"]))
             self._refresh_all_styles()
             self._dirty = True
             self._update_status()
@@ -837,7 +838,7 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setApplicationName("GraphCanvas")
-    app.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"]))
+    app.setFont(QFont("Segoe UI", config.SETTINGS["app_ui_font_size"]))
 
     w = MainWindow()
     w.show()

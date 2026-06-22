@@ -59,6 +59,11 @@ PROPERTY_SCHEMA = {
 SETTINGS = {
     "ui_font_size":      10,
     "sidebar_font_size": 11,
+    "app_ui_font_size": 11,
+    "ask_edge_label_before_add": True,
+    "search_properties": True,
+    "search_notes": False,
+    "search_sticky_text": False,
     "default_node_type": "default",
     "default_edge_type": "relationship",
     "default_direction": "→",
