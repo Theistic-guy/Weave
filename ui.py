@@ -16,7 +16,8 @@ from PyQt5.QtCore import Qt, pyqtSignal, QEvent
 import config
 from config import gc, qc
 import gitsync
-
+from utils import pick_color,is_dark_theme
+from colorpalette import ColorPaletteDialog
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Shared style helpers
@@ -427,9 +428,13 @@ class Sidebar(QWidget):
         col_lbl.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
         def _pick_col():
-            c = QColorDialog.getColor(QColor(group.color), self)
-            if c.isValid():
-                group.color = c.name()
+            col = pick_color(
+                self,
+                group.color
+            )
+
+            if col:
+                group.color = col
                 sw.setStyleSheet(_swatch_ss(group.color))
                 group.update()
                 self.scene.graph_changed.emit()
@@ -505,9 +510,13 @@ class Sidebar(QWidget):
         col_lbl.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
         def _pick_col():
-            c = QColorDialog.getColor(QColor(node.color), self)
-            if c.isValid():
-                node.color = c.name()
+            col = pick_color(
+                self,
+                node.color
+            )
+
+            if col:
+                node.color = col
                 sw.setStyleSheet(_swatch_ss(node.color))
                 node._refresh_text()
                 self.scene.update()
@@ -669,9 +678,13 @@ class Sidebar(QWidget):
         col_lbl.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
         def _pick_col():
-            c = QColorDialog.getColor(QColor(edge.color), self)
-            if c.isValid():
-                edge.color = c.name()
+            col = pick_color(
+                self,
+                edge.color
+            )
+
+            if col:
+                edge.color = col
                 sw.setStyleSheet(_swatch_ss(edge.color))
                 edge._refresh_label_text()
                 self.scene.update()
@@ -1073,10 +1086,14 @@ class SettingsDialog(QDialog):
             return
         if name in self.temp_colors:
             QMessageBox.warning(self, "Duplicate", f"Node type '{name}' already exists."); return
-        col = QColorDialog.getColor(QColor("#888888"), self, "Pick colour for this type")
-        if col.isValid():
-            self.temp_colors[name] = col.name()
-            self._add_nt_item(name, col.name())
+        col = pick_color(
+            self,
+            "#888888"
+        )
+
+        if col:
+            self.temp_colors[name] = col
+            self._add_nt_item(name, col)
             self.def_node_type.addItem(name)
 
     def _rename_node_type(self):
@@ -1119,10 +1136,16 @@ class SettingsDialog(QDialog):
         item = self.nt_list.currentItem()
         if not item: return
         nt = item.data(Qt.UserRole)
-        c  = QColorDialog.getColor(QColor(self.temp_colors[nt]), self)
-        if c.isValid():
-            self.temp_colors[nt] = c.name()
-            pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
+        col = pick_color(
+            self,
+            self.temp_colors[nt]
+        )
+
+        if col:
+            self.temp_colors[nt] = col
+            pix = QPixmap(14, 14)
+            pix.fill(QColor(col))
+            item.setIcon(QIcon(pix))
 
     def _delete_node_type(self):
         item = self.nt_list.currentItem()
@@ -1150,10 +1173,14 @@ class SettingsDialog(QDialog):
             return
         if name in self.temp_edges:
             QMessageBox.warning(self, "Duplicate", f"Edge type '{name}' already exists."); return
-        col = QColorDialog.getColor(QColor("#adb5bd"), self, "Pick colour for this type")
-        if col.isValid():
-            self.temp_edges[name] = col.name()
-            self._add_et_item(name, col.name())
+        col = pick_color(
+            self,
+            "#adb5bd"
+        )
+
+        if col:
+            self.temp_edges[name] = col
+            self._add_et_item(name, col)
             self.def_edge_type.addItem(name)
 
     def _rename_edge_type(self):
@@ -1187,10 +1214,16 @@ class SettingsDialog(QDialog):
         item = self.et_list.currentItem()
         if not item: return
         et = item.data(Qt.UserRole)
-        c  = QColorDialog.getColor(QColor(self.temp_edges[et]), self)
-        if c.isValid():
-            self.temp_edges[et] = c.name()
-            pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
+        col = pick_color(
+            self,
+            self.temp_edges[et]
+        )
+
+        if col:
+            self.temp_edges[et] = col
+            pix = QPixmap(14, 14)
+            pix.fill(QColor(col))
+            item.setIcon(QIcon(pix))
 
     def _delete_edge_type(self):
         item = self.et_list.currentItem()

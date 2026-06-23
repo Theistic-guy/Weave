@@ -12,6 +12,7 @@ from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPainterPath,QPai
 
 import config
 from config import gc, qc, new_id
+from utils import *
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1501,10 +1502,20 @@ class CanvasView(QGraphicsView):
                     node.label = t; node._refresh_text()
                     self.scene().graph_changed.emit()
             elif ch == locals().get("a_col"):
-                c = QColorDialog.getColor(QColor(node.color), self)
-                if c.isValid():
-                    node.color = c.name(); node._refresh_text()
+                col = pick_color(
+                    self,
+                    node.color
+                )
+
+                if col:
+                    node.color = col
+                    node._refresh_text()
                     self.scene().update(); self.scene().graph_changed.emit()
+
+                # c = QColorDialog.getColor(QColor(node.color), self)
+                # if c.isValid():
+                #     node.color = c.name(); node._refresh_text()
+                #     self.scene().update(); self.scene().graph_changed.emit()
             elif ch == act_left:
                 node.node_label_dock = "left"
                 node._refresh_text()
@@ -1550,9 +1561,14 @@ class CanvasView(QGraphicsView):
                     group.update()
                     self.scene().graph_changed.emit()
             elif ch == a_col:
-                c = QColorDialog.getColor(QColor(group.color), self)
-                if c.isValid():
-                    group.color = c.name()
+
+                c = pick_color(
+                    self,
+                    group.color
+                )
+
+                if c:
+                    group.color = c
                     group.update()
                     self.scene().graph_changed.emit()
             elif ch == a_sel_mem:
@@ -1606,10 +1622,16 @@ class CanvasView(QGraphicsView):
                 ctext.italic = a_italic.isChecked(); ctext._refresh()
                 self.scene().graph_changed.emit()
             elif ch == a_col:
-                c = QColorDialog.getColor(QColor(ctext.color), self)
-                if c.isValid():
-                    ctext.color = c.name(); ctext._refresh()
-                    self.scene().update(); self.scene().graph_changed.emit()
+                col = pick_color(
+                    self,
+                    ctext.color
+                )
+
+                if col:
+                    ctext.color = col
+                    ctext._refresh()
+                    self.scene().update()
+                    self.scene().graph_changed.emit()
             elif ch == a_copy:
                 if not ctext.isSelected():
                     self.scene().clearSelection()
@@ -1647,10 +1669,16 @@ class CanvasView(QGraphicsView):
                 if ok:
                     edge.set_label(t); self.scene().graph_changed.emit()
             elif ch == a_col:
-                c = QColorDialog.getColor(QColor(edge.color), self)
-                if c.isValid():
-                    edge.color = c.name(); edge._refresh_label_text()
-                    self.scene().update(); self.scene().graph_changed.emit()
+                col = pick_color(
+                    self,
+                    edge.color
+                )
+
+                if col:
+                    edge.color = col
+                    edge._refresh_label_text()
+                    self.scene().update()
+                    self.scene().graph_changed.emit()
             elif ch in dir_acts:
                 edge.set_direction(dir_acts[ch]); self.scene().graph_changed.emit()
             elif ch in typ_acts:

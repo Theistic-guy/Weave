@@ -33,7 +33,7 @@ class PaletteColor:
 
 
 PALETTE: List[PaletteColor] = [
-    PaletteColor("Black", "#000000"),
+    PaletteColor("Neutral", "#000000"),
     PaletteColor("Red", "#e53935"),
     PaletteColor("Orange", "#fb8c00"),
     PaletteColor("Amber", "#ffb300"),
@@ -119,6 +119,7 @@ def make_theme_shades(base_hex: str, dark_theme: bool) -> List[str]:
             return ["#ffffff","#ffffff","#ffffff","#ffffff","#ffffff"]
     elif base_hex == "#ffffff":
         if not dark_theme:
+            return ["#000000","#000000","#000000","#000000","#000000"]
              
     # Five shades from subtle to stronger.
     levels = [0.0, 0.25, 0.5, 0.75, 1.0]
@@ -173,6 +174,7 @@ class SwatchButton(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            print("SWATCH CLICKED:", self.name, self.shades[2])
             self.clicked.emit(self.name, self.shades[2])
             event.accept()
             return
@@ -214,6 +216,7 @@ class ColorPaletteDialog(QDialog):
         self._dark_theme = dark_theme
         self._current_selected: SwatchButton | None = None
         self._cards: List[SwatchButton] = []
+        self.selected_color = None
 
         self._build_ui()
         self._apply_theme()
@@ -343,6 +346,7 @@ class ColorPaletteDialog(QDialog):
             self._current_selected.set_selected(True)
 
     def _on_color_clicked(self, name: str, hex_color: str):
+        self.selected_color = hex_color
         for c in self._cards:
             c.set_selected(False)
         sender = self.sender()
@@ -350,6 +354,7 @@ class ColorPaletteDialog(QDialog):
             sender.set_selected(True)
             self._current_selected = sender
         self.colorSelected.emit(name, hex_color)
+        self.accept()
 
     def showEvent(self, event):
         super().showEvent(event)
