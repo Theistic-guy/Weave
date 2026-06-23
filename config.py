@@ -67,7 +67,10 @@ SETTINGS = {
     "default_node_type": "default",
     "default_edge_type": "relationship",
     "default_direction": "→",
-    "explorer_font_size" : 12
+    "explorer_font_size" : 12,
+    # ── Git-based sync (two-machine personal sync, see gitsync.py) ──
+    "sync_repo_path":  "",
+    "sync_remote_url": "",
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

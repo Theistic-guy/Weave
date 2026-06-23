@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
@@ -15,6 +15,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QEvent
 
 import config
 from config import gc, qc
+import gitsync
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -874,6 +875,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_general_tab(),  "⚙  General")
         self.tabs.addTab(self._build_types_tab(),    "⬡  Node & Edge Types")
         self.tabs.addTab(self._build_props_tab(),    "⊞  Property Schema")
+        self.tabs.addTab(self._build_sync_tab(),     "🔄  Sync")
         main_lay.addWidget(self.tabs)
 
         # Button row
@@ -1266,8 +1268,160 @@ class SettingsDialog(QDialog):
         self.temp_schema[target].remove(key)
         self.schema_list.takeItem(self.schema_list.row(item))
 
+    # ── Sync tab ──────────────────────────────────────────────────────────────
+    def _build_sync_tab(self):
+        w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(12)
+
+        grp = QGroupBox("Git Repo (single-user, two-machine sync)")
+        gl = QFormLayout(grp)
+
+        path_row = QHBoxLayout()
+        default_path = self.temp_settings.get("sync_repo_path", "") or self._default_sync_path()
+        self.sync_path_edit = QLineEdit(default_path)
+        self.sync_path_edit.setStyleSheet(_inp_ss())
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedHeight(28)
+        browse_btn.clicked.connect(self._browse_sync_path)
+        path_row.addWidget(self.sync_path_edit)
+        path_row.addWidget(browse_btn)
+        gl.addRow("Repo path:", path_row)
+
+        self.sync_url_edit = QLineEdit(self.temp_settings.get("sync_remote_url", ""))
+        self.sync_url_edit.setStyleSheet(_inp_ss())
+        self.sync_url_edit.setPlaceholderText("git@github.com:user/weave-data.git")
+        gl.addRow("Remote URL:", self.sync_url_edit)
+
+        lay.addWidget(grp)
+
+        link_row = QHBoxLayout()
+        self.link_btn = QPushButton("🔗 Initialize / Link")
+        self.link_btn.clicked.connect(self._do_link)
+        link_row.addWidget(self.link_btn)
+        link_row.addStretch()
+        lay.addLayout(link_row)
+
+        info = QLabel(
+            "Links the folder above to the given remote for two-machine sync of the\n"
+            ".weave file only (.bweave exports stay untouched, separate from this).\n\n"
+            "Git must already be installed & configured (SSH keys etc.) on this machine —\n"
+            "this feature just shells out to the git CLI and trusts your existing setup;\n"
+            "it doesn't manage credentials or tokens itself.\n\n"
+            "Once linked, use the 🔄 Sync button (Ctrl+Alt+S) in the main toolbar for\n"
+            "day-to-day syncing — no need to come back to this tab."
+        )
+        info.setStyleSheet(f"color:{gc('TEXT_MUTED')}; font-size:11px;")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        lay.addStretch()
+        return w
+
+    def _default_sync_path(self):
+        """Default repo path = folder containing the currently-open .weave file."""
+        fp = getattr(self.parent(), "_file_path", None)
+        if fp:
+            return os.path.dirname(os.path.abspath(fp))
+        return ""
+
+    def _browse_sync_path(self):
+        start = self.sync_path_edit.text().strip() or os.path.expanduser("~")
+        d = QFileDialog.getExistingDirectory(self, "Select Sync Folder", start)
+        if d:
+            self.sync_path_edit.setText(d)
+
+    def _save_sync_settings(self):
+        self.temp_settings["sync_repo_path"]  = self.sync_path_edit.text().strip()
+        self.temp_settings["sync_remote_url"] = self.sync_url_edit.text().strip()
+
+    def _do_link(self):
+        repo_path  = self.sync_path_edit.text().strip()
+        remote_url = self.sync_url_edit.text().strip()
+        if not repo_path or not remote_url:
+            QMessageBox.warning(self, "Missing info",
+                "Both a repo path and a remote URL are needed to link.")
+            return
+
+        self.link_btn.setEnabled(False)
+        self.link_btn.setText("Linking…")
+        QApplication.processEvents()
+        try:
+            case, info = gitsync.detect_link_case(repo_path, remote_url)
+
+            if case == "error":
+                QMessageBox.critical(self, "Link failed", info)
+                return
+
+            if case == "already_linked":
+                QMessageBox.information(self, "Already linked",
+                    "This folder is already linked to that remote. Nothing to do.")
+                self._save_sync_settings()
+                return
+
+            if case == "conflict_ambiguous":
+                QMessageBox.critical(self, "Cannot link",
+                    "This folder already contains files but isn't a git repo, and the\n"
+                    "remote already has commits — linking these would create conflicting\n"
+                    "histories.\n\n"
+                    "Pick an empty folder instead (it'll be cloned from the remote), or\n"
+                    "resolve this manually (e.g. move the existing files aside) and try again.")
+                return
+
+            if case == "repoint":
+                resp = QMessageBox.question(
+                    self, "Change remote?",
+                    f"This folder is already a git repo pointing to:\n{info}\n\n"
+                    f"Re-point it to:\n{remote_url}\n\n"
+                    "This won't delete any commits — it just changes where future\n"
+                    "pulls/pushes go.",
+                    QMessageBox.Yes | QMessageBox.No)
+                if resp != QMessageBox.Yes:
+                    return
+                res = gitsync.do_repoint(repo_path, remote_url)
+                if not res.ok:
+                    QMessageBox.critical(self, "Link failed", res.stderr or "git remote set-url failed.")
+                    return
+                QMessageBox.information(self, "Linked", "Remote updated.")
+                self._save_sync_settings()
+                return
+
+            if case == "clone":
+                res = gitsync.do_clone(remote_url, repo_path)
+                if not res.ok:
+                    QMessageBox.critical(self, "Link failed", res.stderr or "git clone failed.")
+                    return
+                QMessageBox.information(self, "Linked", "Repo cloned successfully.")
+                self._save_sync_settings()
+                return
+
+            if case == "init_new":
+                res = gitsync.do_init_new(repo_path, remote_url)
+                if not res.ok:
+                    QMessageBox.critical(self, "Link failed", res.stderr or "git init failed.")
+                    return
+
+                weave_files = gitsync.find_weave_files(repo_path)
+                if weave_files:
+                    resp = QMessageBox.question(
+                        self, "Push initial files?",
+                        f"Found {len(weave_files)} .weave file(s) already in this folder.\n"
+                        "Commit and push them to the new remote now?",
+                        QMessageBox.Yes | QMessageBox.No)
+                    if resp == QMessageBox.Yes:
+                        push_res = gitsync.do_first_commit_push(repo_path, weave_files)
+                        if not push_res.ok:
+                            QMessageBox.critical(self, "Push failed",
+                                push_res.stderr or "Initial commit/push failed.")
+                            return
+                QMessageBox.information(self, "Linked", "Repo initialized and linked to remote.")
+                self._save_sync_settings()
+                return
+        finally:
+            self.link_btn.setEnabled(True)
+            self.link_btn.setText("🔗 Initialize / Link")
+
     # ── Apply helpers ─────────────────────────────────────────────────────────
     def _collect_settings(self):
+        self._save_sync_settings()
         self.temp_settings["ui_font_size"]      = self.ui_font_spin.value()
         self.temp_settings["app_ui_font_size"] = (
             self.app_ui_spin.value()

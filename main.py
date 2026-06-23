@@ -12,6 +12,7 @@ from PyQt5.QtGui import QFont, QKeySequence, QBrush, QPainter
 
 import config
 from config import gc, qc
+import gitsync
 from canvas import GraphScene, CanvasView, NodeItem, EdgeItem, CanvasTextItem, NodeGroup
 from ui import Sidebar, SearchBar, SettingsDialog, FileExplorer
 
@@ -258,6 +259,7 @@ class MainWindow(QMainWindow):
         sep()
         btn("🌗 Theme",   "Toggle theme (T)",          self._toggle_theme,    "T")
         btn("⚙ Settings", "Settings",                 self._open_settings)
+        btn("🔄 Sync",    "Git sync (Ctrl+Alt+S)",     self._sync_now,        "Ctrl+Alt+S")
         sep()
         btn("🗑 Clear",   "Clear graph",               self._clear_all)
 
@@ -513,6 +515,40 @@ class MainWindow(QMainWindow):
             #     QFont("Segoe UI", config.SETTINGS["app_ui_font_size"]))
             self._refresh_all_styles()
             self._dirty = True
+            self._update_status()
+
+    def _sync_now(self):
+        """Toolbar/Ctrl+Alt+S action: add -> commit -> pull --rebase -> push
+        against the repo linked in Settings → Sync. Never auto-merges graph
+        JSON — on a real conflict it stops and tells the user instead."""
+        repo_path  = config.SETTINGS.get("sync_repo_path", "").strip()
+        remote_url = config.SETTINGS.get("sync_remote_url", "").strip()
+
+        if not repo_path or not remote_url or not gitsync.is_git_repo(repo_path):
+            QMessageBox.information(
+                self, "Not linked",
+                "No linked git repo yet.\n\n"
+                "Go to Settings → Sync to link this folder to a remote first.")
+            return
+
+        weave_files = gitsync.find_weave_files(repo_path)
+        if not weave_files:
+            QMessageBox.information(
+                self, "Nothing to sync",
+                f"No .weave file found in the linked folder:\n{repo_path}")
+            return
+
+        self.status.showMessage("Syncing…")
+        QApplication.processEvents()
+        result = gitsync.sync_now(repo_path, weave_files)
+
+        if result["status"] == "synced":
+            self.status.showMessage("Synced.", 4000)
+        elif result["status"] == "conflict":
+            QMessageBox.warning(self, "Sync conflict", result["message"])
+            self._update_status()
+        else:
+            QMessageBox.critical(self, "Sync failed", result["message"])
             self._update_status()
 
     def _toggle_explorer(self):
