@@ -1,5 +1,6 @@
-from colorpalette import ColorPaletteDialog
+from colorpalette import ColorPaletteDialog,theme_color
 import config
+from PyQt5.QtGui import  QColor
 
 def pick_color(parent=None, current_color=None):
     dlg = ColorPaletteDialog(
@@ -22,3 +23,12 @@ def pick_color(parent=None, current_color=None):
 
 def is_dark_theme()->bool:
     return (True if config.CURRENT_THEME == "dark" else False)
+
+
+def graph_color(hex_color: str) -> QColor:
+    return QColor(
+        theme_color(
+            hex_color,
+            is_dark_theme()
+        )
+    )

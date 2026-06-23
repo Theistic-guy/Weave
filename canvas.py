@@ -48,7 +48,7 @@ class EdgeItem(QGraphicsPathItem):
         # Only show the user-provided label — no [type] prefix clutter
         self._label_item.setPlainText(self.label)
         self._label_item.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
-        self._label_item.setDefaultTextColor(QColor(self.color))
+        self._label_item.setDefaultTextColor(graph_color((self.color)))
         self.update_path()
 
     def shape(self):
@@ -124,7 +124,7 @@ class EdgeItem(QGraphicsPathItem):
         painter.setRenderHint(QPainter.Antialiasing)
         qt_style = self.LINE_STYLES.get(self.line_style, Qt.SolidLine)
         pen = QPen(
-            qc("ACCENT") if self.isSelected() else QColor(self.color),
+            qc("ACCENT") if self.isSelected() else graph_color(self.color),
             2.0 if self.isSelected() else 1.2,
             qt_style,
         )
@@ -287,7 +287,7 @@ class NodeItem(QGraphicsItem):
         self._text.setPlainText(self.label)
         font = QFont("Segoe UI", max(1, int(round(effective_pt))), QFont.Medium)
         self._text.setFont(font) #That is why setFont() must happen before you measure w and h.
-        self._text.setDefaultTextColor(QColor(self.color))
+        self._text.setDefaultTextColor(graph_color(self.color))
         self._update_label_position()
         self._refresh_sticky()
 
@@ -359,7 +359,7 @@ class NodeItem(QGraphicsItem):
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
         r   = self.radius
-        col = qc("ACCENT") if self.isSelected() else QColor(self.color)
+        col = qc("ACCENT") if self.isSelected() else graph_color(self.color)
 
         # Fade circle at very low zoom so the label (child QGraphicsTextItem) stays
         # readable against the background even when the circle itself is tiny.
@@ -468,7 +468,7 @@ class CanvasTextItem(QGraphicsItem):
     def _refresh(self):
         self.prepareGeometryChange()
         self._txt.setPlainText(self.text)
-        self._txt.setDefaultTextColor(QColor(self.color))
+        self._txt.setDefaultTextColor(graph_color(self.color))
         w = QFont.Bold if self.bold else QFont.Normal
         f = QFont("Segoe UI", self.font_size, w)
         f.setItalic(self.italic)
@@ -663,7 +663,7 @@ class NodeGroup(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
-        col = QColor(self.color)
+        col = graph_color(self.color)
 
         painter.setBrush(Qt.NoBrush)   # fully transparent — was a translucent fill
 

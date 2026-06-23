@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional
 
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QColor, QFont, QPainter, QIcon, QPixmap
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -21,10 +21,6 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 
-
-# -----------------------------------------------------------------------------
-# Palette data
-# -----------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class PaletteColor:
@@ -67,82 +63,46 @@ PALETTE: List[PaletteColor] = [
 ]
 
 
-# -----------------------------------------------------------------------------
-# Color helpers
-# -----------------------------------------------------------------------------
+def theme_color(base_hex: str, dark_theme: bool) -> str:
+    """Return the theme-aware preview color for a palette entry."""
+    base_hex = base_hex.lower()
 
-def _mix(a: QColor, b: QColor, t: float) -> QColor:
-    t = max(0.0, min(1.0, t))
-    return QColor(
-        round(a.red() * (1 - t) + b.red() * t),
-        round(a.green() * (1 - t) + b.green() * t),
-        round(a.blue() * (1 - t) + b.blue() * t),
-    )
+    if base_hex == "#000000":
+        return "#FFFFFF" if dark_theme else "#000000"
+    if base_hex == "#ffffff":
+        return "#000000" if not dark_theme else "#FFFFFF"
 
-
-def _shade_hex(hex_color: str, amount: float, dark_theme: bool) -> str:
-    """Return a theme-aware shade of the base color.
-
-    amount is in [0..1].
-    For light theme, we bias a little toward white for the lighter swatches and
-    darken for the deeper swatches.
-    For dark theme, we keep the swatches more saturated and visible on a dark
-    background by biasing less toward black and slightly toward white.
-    """
-    c = QColor(hex_color)
+    c = QColor(base_hex)
     if not c.isValid():
-        return hex_color
+        return base_hex
 
-    white = QColor("#ffffff")
-    black = QColor("#000000")
+    h, s, v, a = c.getHsv()
 
     if dark_theme:
-        # Swatches should remain visible on dark backgrounds.
-        # 0.0 -> slightly lighter than base, 1.0 -> brighter/livelier.
-        lighter = _mix(c, white, 0.18 + amount * 0.32)
-        darker = _mix(c, black, 0.10 + amount * 0.12)
-        # blend mostly toward the lighter direction for dark mode
-        result = _mix(darker, lighter, 0.72)
+        v = min(255, int(v * 1.14) + 8)
+        s = min(255, int(s * 1.03))
     else:
-        # Swatches should remain visible on light backgrounds.
-        # 0.0 -> slightly darker than base, 1.0 -> even darker.
-        lighter = _mix(c, white, 0.10 + amount * 0.20)
-        darker = _mix(c, black, 0.12 + amount * 0.36)
-        result = _mix(lighter, darker, 0.62)
+        v = max(0, int(v * 0.94))
+        s = max(0, int(s * 0.98))
 
-    return result.name()
-
-
-def make_theme_shades(base_hex: str, dark_theme: bool) -> List[str]:
-    if base_hex == "#000000":
-        if dark_theme:
-            return ["#ffffff","#ffffff","#ffffff","#ffffff","#ffffff"]
-    elif base_hex == "#ffffff":
-        if not dark_theme:
-            return ["#000000","#000000","#000000","#000000","#000000"]
-             
-    # Five shades from subtle to stronger.
-    levels = [0.0, 0.25, 0.5, 0.75, 1.0]
-    return [_shade_hex(base_hex, amt, dark_theme) for amt in levels]
+    c.setHsv(h, s, v, a)
+    return c.name()
 
 
 def text_contrast_color(bg: QColor) -> str:
-    # Simple readable text choice for labels on swatches.
     return "#111111" if bg.lightness() > 170 else "#f5f5f5"
 
 
-# -----------------------------------------------------------------------------
-# Swatch widget
-# -----------------------------------------------------------------------------
-
 class SwatchButton(QFrame):
-    clicked = pyqtSignal(str, str)  # name, hex
+    clicked = pyqtSignal(str, str)  # name, base hex
 
-    def __init__(self, name: str, shades: List[str], parent=None):
+    def __init__(self, name: str, base_hex: str, dark_theme: bool, parent=None):
         super().__init__(parent)
         self.name = name
-        self.shades = shades
+        self.base_hex = base_hex
+        self._dark_theme = dark_theme
         self._selected = False
+
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumHeight(72)
@@ -152,7 +112,7 @@ class SwatchButton(QFrame):
         self._label.setWordWrap(True)
         self._label.setAttribute(Qt.WA_TransparentForMouseEvents)
 
-        self._sub = QLabel(shades[2].upper())
+        self._sub = QLabel("")
         self._sub.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         lay = QVBoxLayout(self)
@@ -163,9 +123,8 @@ class SwatchButton(QFrame):
 
         self._apply_style()
 
-    def set_shades(self, shades: List[str]):
-        self.shades = shades
-        self._sub.setText(shades[2].upper())
+    def set_theme(self, dark_theme: bool):
+        self._dark_theme = dark_theme
         self._apply_style()
 
     def set_selected(self, selected: bool):
@@ -174,38 +133,31 @@ class SwatchButton(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            print("SWATCH CLICKED:", self.name, self.shades[2])
-            self.clicked.emit(self.name, self.shades[2])
+            self.clicked.emit(self.name, self.base_hex)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def _apply_style(self):
-        base = QColor(self.shades[2])
+        display_hex = theme_color(self.base_hex, self._dark_theme)
+        base = QColor(display_hex)
         txt = text_contrast_color(base)
-        border = "2px solid #6c63ff" if self._selected else "1px solid rgba(0,0,0,0.12)"
-        shadow = "box-shadow: 0 0 0 1px rgba(0,0,0,0.04);"
+        border = "2px solid #6c63ff" if self._selected else "1px solid rgba(0,0,0,0.10)"
+
         self.setStyleSheet(
-            f"QFrame#SwatchButton {{"
-            f" background:{base.name()};"
-            f" border-radius:12px;"
-            f" border:{border};"
-            f"}}"
+            f"QFrame#SwatchButton {{ background:{display_hex}; border-radius:12px; border:{border}; }}"
         )
         self._label.setStyleSheet(
             f"QLabel {{ color:{txt}; background:transparent; font-weight:600; font-size:12px; }}"
         )
+        self._sub.setText(display_hex.upper())
         self._sub.setStyleSheet(
-            f"QLabel {{ color:{txt}; background:transparent; font-size:10px; opacity:0.92; }}"
+            f"QLabel {{ color:{txt}; background:transparent; font-size:10px; }}"
         )
 
 
-# -----------------------------------------------------------------------------
-# Dialog
-# -----------------------------------------------------------------------------
-
 class ColorPaletteDialog(QDialog):
-    colorSelected = pyqtSignal(str, str)  # name, hex
+    colorSelected = pyqtSignal(str, str)  # name, base hex
 
     def __init__(self, dark_theme: bool = False, parent=None):
         super().__init__(parent)
@@ -213,23 +165,23 @@ class ColorPaletteDialog(QDialog):
         self.setModal(True)
         self.resize(920, 700)
         self.setMinimumSize(760, 540)
+
         self._dark_theme = dark_theme
-        self._current_selected: SwatchButton | None = None
+        self._current_selected: Optional[SwatchButton] = None
         self._cards: List[SwatchButton] = []
-        self.selected_color = None
+        self.selected_color: Optional[str] = None
+        self.selected_name: Optional[str] = None
 
         self._build_ui()
         self._apply_theme()
         self._populate_cards()
         self.search.setFocus()
 
-    # ------------------------------------------------------------------ UI
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(12)
 
-        # Top bar
         top = QHBoxLayout()
         top.setSpacing(8)
 
@@ -251,7 +203,6 @@ class ColorPaletteDialog(QDialog):
         top.addWidget(self.theme_btn)
         root.addLayout(top)
 
-        # Scrollable grid
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
@@ -263,17 +214,15 @@ class ColorPaletteDialog(QDialog):
         self.grid.setHorizontalSpacing(12)
         self.grid.setVerticalSpacing(12)
         self.scroll.setWidget(self.content)
+
         root.addWidget(self.scroll, 1)
 
     def _apply_theme(self):
-        
-        # App chrome only.
         if self._dark_theme:
             bg = "#121418"
             panel = "#1a1f26"
             card = "#202733"
             text = "#eef2ff"
-            muted = "#9ca3af"
             border = "#2d3644"
             search_bg = "#0f1318"
         else:
@@ -281,48 +230,36 @@ class ColorPaletteDialog(QDialog):
             panel = "#ffffff"
             card = "#ffffff"
             text = "#1f2937"
-            muted = "#6b7280"
             border = "#d8dee9"
             search_bg = "#ffffff"
 
-        self.content.setStyleSheet(
-            f"background:transparent;"
-        )
         self.setStyleSheet(
             f"QDialog {{ background:{bg}; }}"
-            f"QLineEdit#PaletteSearch {{"
-            f" background:{search_bg}; color:{text}; border:1px solid {border};"
-            f" border-radius:10px; padding:5px 10px; font-size:12px; }}"
+            f"QLineEdit#PaletteSearch {{ background:{search_bg}; color:{text}; border:1px solid {border}; border-radius:10px; padding:5px 10px; font-size:12px; }}"
             f"QLineEdit#PaletteSearch:focus {{ border:1px solid #6c63ff; }}"
-            f"QToolButton {{ background:{panel}; color:{text}; border:1px solid {border};"
-            f" border-radius:10px; }}"
+            f"QToolButton {{ background:{panel}; color:{text}; border:1px solid {border}; border-radius:10px; }}"
             f"QToolButton:hover {{ background:{card}; }}"
             f"QScrollArea {{ background:transparent; border:none; }}"
         )
-        self.theme_btn.setText("☾" if self._dark_theme else "☀")
-        self.theme_btn.setStyleSheet(
-            f"QToolButton {{ font-size:16px; font-weight:700; }}"
-        )
 
-        # update cards if they already exist
+        self.scroll.viewport().setStyleSheet(f"background:{bg}; border:none;")
+        self.content.setStyleSheet(f"background:{bg};")
+
+        self.theme_btn.setText("☾" if self._dark_theme else "☀")
+        self.theme_btn.setStyleSheet("QToolButton { font-size:16px; font-weight:700; }")
         for card in self._cards:
-            card.set_shades(make_theme_shades(card.name_hex_base, self._dark_theme))
+            card.set_theme(self._dark_theme)
 
     def _populate_cards(self):
-        # clear any existing
         while self.grid.count():
             item = self.grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         self._cards.clear()
-
-        # 3 columns on average; cards will flow into rows.
         cols = 3
         for i, item in enumerate(PALETTE):
-            shades = make_theme_shades(item.base_hex, self._dark_theme)
-            card = SwatchButton(item.name, shades)
-            card.name_hex_base = item.base_hex  # keep for theme switching
+            card = SwatchButton(item.name, item.base_hex, self._dark_theme)
             card.clicked.connect(self._on_color_clicked)
             self._cards.append(card)
             self.grid.addWidget(card, i // cols, i % cols)
@@ -335,25 +272,17 @@ class ColorPaletteDialog(QDialog):
     def _toggle_theme(self):
         self._dark_theme = self.theme_btn.isChecked()
         self._apply_theme()
-        self._refresh_shades()
 
-    def _refresh_shades(self):
-        for card, base in zip(self._cards, PALETTE):
-            shades = make_theme_shades(base.base_hex, self._dark_theme)
-            card.set_shades(shades)
-        # preserve selection visuals
-        if self._current_selected:
-            self._current_selected.set_selected(True)
-
-    def _on_color_clicked(self, name: str, hex_color: str):
-        self.selected_color = hex_color
+    def _on_color_clicked(self, name: str, base_hex: str):
+        self.selected_name = name
+        self.selected_color = base_hex
         for c in self._cards:
             c.set_selected(False)
         sender = self.sender()
         if isinstance(sender, SwatchButton):
             sender.set_selected(True)
             self._current_selected = sender
-        self.colorSelected.emit(name, hex_color)
+        self.colorSelected.emit(name, base_hex)
         self.accept()
 
     def showEvent(self, event):
@@ -361,10 +290,6 @@ class ColorPaletteDialog(QDialog):
         self.search.setFocus()
         self.search.selectAll()
 
-
-# -----------------------------------------------------------------------------
-# Demo launcher
-# -----------------------------------------------------------------------------
 
 def main():
     app = QApplication(sys.argv)
