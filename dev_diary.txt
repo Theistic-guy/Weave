@@ -7,3 +7,14 @@ can we offload a task to async thread or somethign (but very dangerous if the ma
 
  a loader in the main ui can help while the async thread does the background stuff the main ui
  can keep showing a loading bar
+
+
+ search group name, Text overlays
+
+ lock the inspector sidebar
+
+circle node hide,unhide
+
+a specific size clamp for edges
+
+ #Bugs

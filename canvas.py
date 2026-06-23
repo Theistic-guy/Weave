@@ -501,6 +501,11 @@ class CanvasTextItem(QGraphicsItem):
             "italic":    self.italic,
         }
 
+    def refresh_theme(self):
+        self._txt.setDefaultTextColor(
+            graph_color(self.color)
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  NodeGroup — a visual bounding-box grouping item
@@ -1516,25 +1521,25 @@ class CanvasView(QGraphicsView):
                 # if c.isValid():
                 #     node.color = c.name(); node._refresh_text()
                 #     self.scene().update(); self.scene().graph_changed.emit()
-            elif ch == act_left:
+            elif ch == locals().get("act_left"):
                 node.node_label_dock = "left"
                 node._refresh_text()
-                self.scene().graph_changed.emit()
+                self.scene.graph_changed.emit()
 
-            elif ch == act_right:
+            elif ch == locals().get("act_right"):
                 node.node_label_dock = "right"
                 node._refresh_text()
-                self.scene().graph_changed.emit()
+                self.scene.graph_changed.emit()
 
-            elif ch == act_above:
+            elif ch == locals().get("act_above"):
                 node.node_label_dock = "above"
                 node._refresh_text()
-                self.scene().graph_changed.emit()
+                self.scene.graph_changed.emit()
 
-            elif ch == act_below:
+            elif ch == locals().get("act_below"):
                 node.node_label_dock = "below"
                 node._refresh_text()
-                self.scene().graph_changed.emit()
+                self.scene.graph_changed.emit()
             elif ch == a_copy:
                 self._copy_selected()
             elif ch == a_del:

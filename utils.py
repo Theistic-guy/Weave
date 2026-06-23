@@ -11,7 +11,6 @@ def pick_color(parent=None, current_color=None):
     selected = {"color": None}
 
     def on_pick(name, hex_color):
-        print("PICK_COLOR RECEIVED:", name, hex_color)
         selected["color"] = hex_color
 
     dlg.colorSelected.connect(on_pick)

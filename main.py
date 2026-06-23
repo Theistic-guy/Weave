@@ -485,6 +485,9 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         config.CURRENT_THEME = "dark" if config.CURRENT_THEME == "light" else "light"
         self._refresh_all_styles()
+        for text_item in self.scene.texts.values():
+            text_item.refresh_theme()
+        self.scene.update()
 
     def _refresh_all_styles(self):
         """Re-apply every style after theme or font-size change."""
