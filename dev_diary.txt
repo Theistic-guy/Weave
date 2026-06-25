@@ -9,8 +9,6 @@ can we offload a task to async thread or somethign (but very dangerous if the ma
  can keep showing a loading bar
 
 
- search group name, Text overlays
-
  lock the inspector sidebar
 
 circle node hide,unhide

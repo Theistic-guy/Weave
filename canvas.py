@@ -15,6 +15,8 @@ from config import gc, qc, new_id
 from utils import *
 
 
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  EdgeItem
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,8 +48,9 @@ class EdgeItem(QGraphicsPathItem):
 
     def _refresh_label_text(self):
         # Only show the user-provided label — no [type] prefix clutter
+        self._label_item.setVisible(not config.SETTINGS.get("hide_edge_labels", False))
         self._label_item.setPlainText(self.label)
-        self._label_item.setFont(QFont("Segoe UI", config.SETTINGS["ui_font_size"] - 1))
+        self._label_item.setFont(QFont("Segoe UI", config.SETTINGS["edge_label_size"]))
         self._label_item.setDefaultTextColor(graph_color((self.color)))
         self.update_path()
 
@@ -79,8 +82,8 @@ class EdgeItem(QGraphicsPathItem):
     def update_path(self):
         sp = self.source_node.scenePos()
         tp = self.target_node.scenePos()
-        r_s = self.source_node.radius
-        r_t = self.target_node.radius
+        r_s = self.source_node.connection_radius()
+        r_t = self.target_node.connection_radius()
         dx = tp.x() - sp.x()
         dy = tp.y() - sp.y()
         dist = math.hypot(dx, dy) or 1
@@ -221,14 +224,43 @@ class StickyOverlay:
             self._scene.removeItem(self._txt)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# Node label can support node dragging
+class NodeLabelItem(QGraphicsTextItem):
+
+    def __init__(self, parent_node):
+        super().__init__("", parent_node)
+        self.parent_node = parent_node
+        self._drag_start = None
+
+    def mousePressEvent(self, event):
+        self._drag_start = event.scenePos()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None:
+            return
+
+        delta = event.scenePos() - self._drag_start
+
+        self.parent_node.setPos(
+            self.parent_node.pos() + delta
+        )
+
+        self._drag_start = event.scenePos()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        event.accept()
+
+    ──────────────────────────────
 #  NodeItem
 # ─────────────────────────────────────────────────────────────────────────────
 class NodeItem(QGraphicsItem):
     def __init__(self, node_id=None, label="Node", x=0, y=0,
                  node_type="default", color=None, properties=None,
                  notes="", sticky_text="", sticky_visible=False,
-                 sticky_dock="right",node_label_dock="right"):
+                 sticky_dock="right",node_label_dock="right",body_visible_override=None):
         super().__init__()
         self.node_id    = node_id or new_id()
         self.label      = label
@@ -241,6 +273,7 @@ class NodeItem(QGraphicsItem):
         self.sticky_visible = sticky_visible
         self.sticky_dock    = sticky_dock
         self.node_label_dock = node_label_dock
+        self.body_visible_override = body_visible_override
         self.edges  = []
         self.radius = 14
 
@@ -250,8 +283,8 @@ class NodeItem(QGraphicsItem):
 
         self._inject_schema()
 
-
-        self._text = QGraphicsTextItem("", self)
+        self._text = NodeLabelItem( self)
+    
 
         # Debounce sticky overlay updates during drag — updating every pixel
         # is expensive; 30ms after the last position change is imperceptible.
@@ -283,7 +316,7 @@ class NodeItem(QGraphicsItem):
         min_scene_pt = MIN_SCREEN_PX / max(view_scale, 0.001)
         effective_pt = max(nominal_pt, min_scene_pt)
 
-        self._text.setVisible(True)
+        self._text.setVisible(not config.SETTINGS.get("hide_node_labels", False))
         self._text.setPlainText(self.label)
         font = QFont("Segoe UI", max(1, int(round(effective_pt))), QFont.Medium)
         self._text.setFont(font) #That is why setFont() must happen before you measure w and h.
@@ -371,25 +404,28 @@ class NodeItem(QGraphicsItem):
             draw_col.setAlpha(node_alpha)
         else:
             draw_col = col
+        hide_body = not self.body_visible()
 
-        painter.setBrush(QBrush(draw_col))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(0, 0), r, r)
-
-        if self.isSelected():
-            painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(col.lighter(150), 2))
-            painter.drawEllipse(QPointF(0, 0), r + 4, r + 4)
-
-        filled = sum(1 for v in self.properties.values() if str(v).strip())
-        if filled:
-            badge = QRectF(r - 6, -r - 2, 12, 10)
-            painter.setBrush(QBrush(QColor("#ff6584")))
+        if not hide_body:
+            painter.setBrush(QBrush(draw_col))
             painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(badge, 3, 3)
-            painter.setPen(QPen(Qt.white))
-            painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
-            painter.drawText(badge, Qt.AlignCenter, str(filled))
+            painter.drawEllipse(QPointF(0, 0), r, r)
+
+            if self.isSelected():
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(col.lighter(150), 2))
+                painter.drawEllipse(QPointF(0, 0), r + 4, r + 4)
+
+            filled = sum(1 for v in self.properties.values() if str(v).strip())
+            if filled:
+                badge = QRectF(r - 6, -r - 2, 12, 10)
+                painter.setBrush(QBrush(QColor("#ff6584")))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(badge, 3, 3)
+                painter.setPen(QPen(Qt.white))
+                painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
+                painter.drawText(badge, Qt.AlignCenter, str(filled))
+        
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -418,6 +454,20 @@ class NodeItem(QGraphicsItem):
             e.update_path()
         self.update()
 
+    def body_visible(self):
+        if self.body_visible_override is not None:
+            return self.body_visible_override
+        return not config.SETTINGS.get("hide_node_bodies", False)
+    
+    def mousePressEvent(self, event):
+        return super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        return super().mouseMoveEvent(event)
+
+    def connection_radius(self):
+        return self.radius if self.body_visible() else 2
+
     # ── Serialisation ─────────────────────────────────────────────────────────
     def to_dict(self):
         return {
@@ -433,6 +483,7 @@ class NodeItem(QGraphicsItem):
             "sticky_visible": self.sticky_visible,
             "sticky_dock":    self.sticky_dock,
             "node_label_dock": self.node_label_dock,
+            "body_visible_override": self.body_visible_override
         }
 
 
@@ -788,14 +839,14 @@ class GraphScene(QGraphicsScene):
     def add_node(self, label="Node", x=0, y=0, node_type=None,
                  color=None, properties=None, node_id=None,
                  notes="", sticky_text="", sticky_visible=False,
-                 sticky_dock="right",node_label_dock="right"):
+                 sticky_dock="right",node_label_dock="right",body_visible_override=None):
         nt = node_type or config.SETTINGS["default_node_type"]
         if nt not in config.NODE_TYPE_COLORS:
             nt = next(iter(config.NODE_TYPE_COLORS), "default")
         n = NodeItem(node_id=node_id, label=label, x=x, y=y,
                      node_type=nt, color=color, properties=properties,
                      notes=notes, sticky_text=sticky_text,
-                     sticky_visible=sticky_visible, sticky_dock=sticky_dock,node_label_dock=node_label_dock)
+                     sticky_visible=sticky_visible, sticky_dock=sticky_dock,node_label_dock=node_label_dock,body_visible_override=body_visible_override)
         self.nodes[n.node_id] = n
         self.addItem(n)
         # StickyOverlay must be created AFTER addItem so the scene is available
@@ -984,7 +1035,8 @@ class GraphScene(QGraphicsScene):
                 sticky_text=nd.get("sticky_text", ""),
                 sticky_visible=nd.get("sticky_visible", False),
                 sticky_dock=nd.get("sticky_dock", "right"),
-                node_label_dock = nd.get("node_label_dock","right")
+                node_label_dock = nd.get("node_label_dock","right"),
+                body_visible_override=nd.get("body_visible_override",None)
             )
         for ed in data.get("edges", []):
             s = self.nodes.get(ed["source"])
@@ -1052,11 +1104,13 @@ class GraphScene(QGraphicsScene):
 
     def mouseReleaseEvent(self, event):
         if self._connecting:
-            tgt = next(
-                (i for i in self.items(event.scenePos())
-                 if isinstance(i, NodeItem) and i is not self._conn_source),
-                None,
-            )
+            tgt = None
+
+            for item in self.items(event.scenePos()):
+                node = self.resolve_node_item(item)
+                if node and node is not self._conn_source:
+                    tgt = node
+                    break
             if tgt:
                 label = ""
                 if config.SETTINGS.get("ask_edge_label_before_add", True ):
@@ -1085,17 +1139,26 @@ class GraphScene(QGraphicsScene):
         if event.button() == Qt.LeftButton:
             items   = self.items(event.scenePos())
             clicked = None
-            for i in items:
-                if isinstance(i, (NodeItem, EdgeItem, CanvasTextItem, NodeGroup)):
-                    clicked = i
+
+            for item in items:
+
+                node = self.resolve_node_item(item)
+                if node:
+                    clicked = node
                     break
-                elif isinstance(i, QGraphicsTextItem):
-                    p = i.parentItem()
+
+                if isinstance(item, (EdgeItem, CanvasTextItem, NodeGroup)):
+                    clicked = item
+                    break
+
+                if isinstance(item, QGraphicsTextItem):
+                    p = item.parentItem()
 
                     if isinstance(p, EdgeItem):
 
                         if not (event.modifiers() & Qt.ControlModifier):
                             self.clearSelection()
+
                         p.setSelected(True)
 
                         self.edge_selected.emit(p)
@@ -1104,10 +1167,6 @@ class GraphScene(QGraphicsScene):
 
                         event.accept()
                         return
-
-                    elif isinstance(p, (NodeItem, CanvasTextItem)):
-                        clicked = p
-                        break
             if isinstance(clicked, NodeItem):
                 if not (event.modifiers() & Qt.ControlModifier):
                     self.clearSelection()
@@ -1146,6 +1205,7 @@ class GraphScene(QGraphicsScene):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._press_pos = event.scenePos()
+
         return super().mousePressEvent(event)
 
     def iter_nodes(self):
@@ -1166,6 +1226,29 @@ class GraphScene(QGraphicsScene):
         for edge in self.iter_edges():
             if edge.edge_type == old_type:
                 edge.set_edge_type(new_type)
+
+
+    def toggle_node_bodies(self, nodes):
+        if not nodes:
+            return
+
+        # If any selected node is currently visible, hide all; otherwise show all
+        any_visible = any(n.body_visible() for n in nodes)
+        new_value = False if any_visible else True
+
+        for n in nodes:
+            n.body_visible_override = new_value
+            n.update()
+
+        self.graph_changed.emit()
+
+    # helper for node body + label uniform interaction
+    def resolve_node_item(self, item):
+        while item is not None:
+            if isinstance(item, NodeItem):
+                return item
+            item = item.parentItem()
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1406,7 +1489,8 @@ class CanvasView(QGraphicsView):
                 sticky_text=nd.get("sticky_text", ""),
                 sticky_visible=nd.get("sticky_visible", False),
                 sticky_dock=nd.get("sticky_dock", "right"),
-                node_label_dock = nd.get("node_label_dock","right")
+                node_label_dock = nd.get("node_label_dock","right"),
+                body_visible_override=nd.get("body_visible_override",None)
             )
             id_map[nd["id"]] = new_node
             new_node.setSelected(True)
@@ -1439,7 +1523,14 @@ class CanvasView(QGraphicsView):
     def contextMenuEvent(self, event):
         scene_pos = self.mapToScene(event.pos())
         items     = self.scene().items(scene_pos)
-        node  = next((i for i in items if isinstance(i, NodeItem)), None)
+
+        # handles node body and label as well
+        node = None
+        for item in items:
+            node = self.scene().resolve_node_item(item)
+            if node:
+                break
+
         edge  = next((i for i in items if isinstance(i, EdgeItem)), None)
         ctext = next((i for i in items if isinstance(i, CanvasTextItem)), None)
         group = next((i for i in items if isinstance(i, NodeGroup)), None)
@@ -1465,6 +1556,7 @@ class CanvasView(QGraphicsView):
             if len(n_selected) > 1:
                 a_group = menu.addAction(f"⬡  Group {len(n_selected)} nodes  (Ctrl+G)")
                 a_copy  = menu.addAction(f"📋  Copy {len(n_selected)} nodes  (Ctrl+C)")
+                a_toggle_body = menu.addAction(f"⚪ Toggle node body for {len(n_selected)} nodes")
                 menu.addSeparator()
                 a_del   = menu.addAction(f"🗑️  Delete {len(n_selected)} nodes")
             else:
@@ -1472,6 +1564,7 @@ class CanvasView(QGraphicsView):
                 a_edit  = menu.addAction("✏️  Rename")
                 a_col   = menu.addAction("🎨  Change colour")
                 label_menu = menu.addMenu("🏷️ Label")
+                a_toggle_body = menu.addAction("⚪ Toggle node body")
                 act_left  = label_menu.addAction("Left")
                 act_right = label_menu.addAction("Right")
                 act_above = label_menu.addAction("Above")
@@ -1524,22 +1617,38 @@ class CanvasView(QGraphicsView):
             elif ch == locals().get("act_left"):
                 node.node_label_dock = "left"
                 node._refresh_text()
-                self.scene.graph_changed.emit()
+                self.scene().graph_changed.emit()
 
             elif ch == locals().get("act_right"):
                 node.node_label_dock = "right"
                 node._refresh_text()
-                self.scene.graph_changed.emit()
+                self.scene().graph_changed.emit()
 
             elif ch == locals().get("act_above"):
                 node.node_label_dock = "above"
                 node._refresh_text()
-                self.scene.graph_changed.emit()
+                self.scene().graph_changed.emit()
 
             elif ch == locals().get("act_below"):
                 node.node_label_dock = "below"
                 node._refresh_text()
-                self.scene.graph_changed.emit()
+                self.scene().graph_changed.emit()
+
+            elif ch == locals().get("a_toggle_body"):
+                nodes = n_selected if len(n_selected) > 1 else [node]
+                for n in nodes:
+
+                    # First toggle creates an override
+                    if getattr(n, "body_visible_override", None) is None:
+                        n.body_visible_override = False
+
+                    else:
+                        n.body_visible_override = not n.body_visible_override
+
+                    n.update()
+
+                self.scene().graph_changed.emit()
+                
             elif ch == a_copy:
                 self._copy_selected()
             elif ch == a_del:

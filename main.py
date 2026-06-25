@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_global_style()
         self._bind_shortcuts()
-        self._load_sample()
+        # self._load_sample()
 
     # ── Style ─────────────────────────────────────────────────────────────────
     def _apply_global_style(self):
@@ -797,9 +797,14 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _clear_all(self):
-        r = QMessageBox.question(self, "Clear graph",
-                                 "Remove all nodes and edges?",
-                                 QMessageBox.Yes | QMessageBox.Cancel)
+        if not (self.scene.nodes or self.scene.edges or self.scene.texts or self.scene.groups):
+            return
+
+        r = QMessageBox.question(
+            self, "Clear graph",
+            "Remove all nodes and edges?",
+            QMessageBox.Yes | QMessageBox.Cancel
+        )
         if r == QMessageBox.Yes:
             self.scene.clear_all()
             self._dirty = True

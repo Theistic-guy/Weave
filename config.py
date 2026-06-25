@@ -58,12 +58,19 @@ PROPERTY_SCHEMA = {
 # ── Runtime settings ──────────────────────────────────────────────────────────
 SETTINGS = {
     "ui_font_size":      10,
-    "sidebar_font_size": 11,
+    "sidebar_font_size": 11, #not in settings dialog box
     "app_ui_font_size": 11,
+    "edge_label_size" : 11,
     "ask_edge_label_before_add": True,
     "search_properties": True,
     "search_notes": False,
     "search_sticky_text": False,
+    "search_edge_labels": False,
+    "search_group_names": False,
+    "search_canvas_text": False,
+    "hide_node_labels": False,
+    "hide_edge_labels": False,
+    "hide_node_bodies": False,
     "default_node_type": "default",
     "default_edge_type": "relationship",
     "default_direction": "→",

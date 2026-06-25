@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
@@ -767,7 +767,7 @@ class SearchBar(QWidget):
 
         self.icon = QLabel("🔍"); lay.addWidget(self.icon)
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("Search nodes… (Ctrl+F)")
+        self.edit.setPlaceholderText("Search… (Ctrl+F)")
         self.edit.textChanged.connect(self._search)
         self.edit.installEventFilter(self)
         lay.addWidget(self.edit)
@@ -812,44 +812,81 @@ class SearchBar(QWidget):
 
     def _search(self, text):
         text = text.strip().lower()
-        self._matches = []; self._match_idx = 0
-        for node in self.scene.nodes.values():
-            node.setSelected(False)
-        if text:
-            for node in self.scene.nodes.values():
-                match = text in node.label.lower()
-                if (
-                    not match
-                    and config.SETTINGS["search_properties"]
-                ):
-                    match = any(
-                        text in str(k).lower()
-                        or text in str(v).lower()
-                        for k, v in node.properties.items()
-                    )
+        self._matches = []
+        self._match_idx = 0
 
-                if (
-                    not match
-                    and config.SETTINGS["search_notes"]
-                ):
-                    match = text in (node.notes or "").lower()
+        self.scene.clearSelection()
 
-                if (
-                    not match
-                    and config.SETTINGS["search_sticky_text"]
-                ):
-                    match = text in (node.sticky_text or "").lower()
-
-                if match:
-                    self._matches.append(node)
-                    node.setSelected(True)
-
-            if self._matches:
-                self._centre_on(0)
-            else:
-                self.result_lbl.setText("No matches")
-        else:
+        if not text:
             self.result_lbl.setText("")
+            return
+
+        # ----------------------------
+        # Nodes
+        # ----------------------------
+        for node in self.scene.nodes.values():
+            match = text in node.label.lower()
+
+            if (
+                not match
+                and config.SETTINGS["search_properties"]
+            ):
+                match = any(
+                    text in str(k).lower()
+                    or text in str(v).lower()
+                    for k, v in node.properties.items()
+                )
+
+            if (
+                not match
+                and config.SETTINGS["search_notes"]
+            ):
+                match = text in (node.notes or "").lower()
+
+            if (
+                not match
+                and config.SETTINGS["search_sticky_text"]
+            ):
+                match = text in (node.sticky_text or "").lower()
+
+            if match:
+                self._matches.append(node)
+                node.setSelected(True)
+
+        # ----------------------------
+        # Edge Labels
+        # ----------------------------
+        if config.SETTINGS["search_edge_labels"]:
+            for edge in self.scene.edges.values():
+                if text in (edge.label or "").lower():
+                    self._matches.append(edge)
+                    edge.setSelected(True)
+
+        # ----------------------------
+        # Group Names
+        # ----------------------------
+        if config.SETTINGS["search_group_names"]:
+            for group in self.scene.groups.values():
+                if text in (group.name or "").lower():
+                    self._matches.append(group)
+                    group.setSelected(True)
+
+        # ----------------------------
+        # Canvas Text Items
+        # ----------------------------
+        if config.SETTINGS["search_canvas_text"]:
+            for txt in self.scene.texts.values():
+                if text in (txt.text or "").lower():
+                    self._matches.append(txt)
+                    txt.setSelected(True)
+
+        # ----------------------------
+        # Results
+        # ----------------------------
+        if self._matches:
+            self._centre_on(0)
+        else:
+            self.result_lbl.setText("No matches")
 
     def _centre_on(self, idx):
         if not self._matches: return
@@ -945,7 +982,7 @@ class SettingsDialog(QDialog):
         w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(12)
 
         grp_font = QGroupBox("Eye Comfort / Fonts")
-        gfl = QFormLayout(grp_font)
+        gfl = QGridLayout(grp_font)
         self.ui_font_spin = QSpinBox(); self.ui_font_spin.setRange(7, 24)
         self.ui_font_spin.setValue(self.temp_settings["ui_font_size"])
         self.app_ui_spin = QSpinBox()
@@ -953,10 +990,24 @@ class SettingsDialog(QDialog):
         self.app_ui_spin.setValue(
             config.SETTINGS["app_ui_font_size"]
         )
+        self.edge_label_size_spin = QSpinBox()
+        self.edge_label_size_spin.setRange(8, 24)
+        self.edge_label_size_spin.setValue(
+            config.SETTINGS["edge_label_size"]
+        )
         
-        gfl.addRow("Canvas Text size:", self.ui_font_spin)
 
-        gfl.addRow("App UI Size", self.app_ui_spin)
+        gfl.setHorizontalSpacing(20)
+        gfl.setVerticalSpacing(8)
+
+        gfl.addWidget(QLabel("Canvas Base Size"), 0, 0)
+        gfl.addWidget(self.ui_font_spin,          0, 1)
+
+        gfl.addWidget(QLabel("App UI Size"),      0, 2)
+        gfl.addWidget(self.app_ui_spin,           0, 3)
+
+        gfl.addWidget(QLabel("Edge Label Size"),  1, 0)
+        gfl.addWidget(self.edge_label_size_spin,  1, 1)
        
         lay.addWidget(grp_font)
 
@@ -979,8 +1030,7 @@ class SettingsDialog(QDialog):
         grp_pref = QGroupBox("Preferences")
         vbox_pref = QVBoxLayout(grp_pref)
         pref_form = QFormLayout()
-        self.ask_edge_label_chk = QCheckBox(
-        )
+        self.ask_edge_label_chk = QCheckBox()
         self.ask_edge_label_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
 
         self.ask_edge_label_chk.setChecked(
@@ -989,13 +1039,30 @@ class SettingsDialog(QDialog):
                 False
             )
         )
+        self.hide_node_labels_chk = QCheckBox()
+        self.hide_edge_labels_chk = QCheckBox()
+        self.hide_node_bodies_chk = QCheckBox()
+        self.hide_node_labels_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
+        self.hide_edge_labels_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
+        self.hide_node_bodies_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
+        self.hide_node_labels_chk.setChecked(config.SETTINGS["hide_node_labels"])
+        self.hide_edge_labels_chk.setChecked(config.SETTINGS["hide_edge_labels"])
+        self.hide_node_bodies_chk.setChecked(config.SETTINGS["hide_node_bodies"])
         pref_form.addRow("Ask edge label before adding new edge:", self.ask_edge_label_chk)
+        pref_form.addRow("Hide Node Labels", self.hide_node_labels_chk)
+        pref_form.addRow("Hide Edge Labels:", self.hide_edge_labels_chk)
+        pref_form.addRow("Hide Node Bodies:", self.hide_node_bodies_chk)
 
         grp_search_in = QGroupBox("Search In")
-        gdl_search_in = QFormLayout(grp_search_in)
+        gdl_search_in = QGridLayout(grp_search_in)
         self.search_properties_chk = QCheckBox("Search properties")
         self.search_notes_chk      = QCheckBox("Search notes")
         self.search_sticky_chk     = QCheckBox("Search sticky text")
+        self.search_edge_labels_chk = QCheckBox("Search edge labels")
+        self.search_group_names_chk = QCheckBox("Search group names")
+        self.search_canvas_text_chk = QCheckBox("Search canvas text items")
+        
+
         self.search_properties_chk.setChecked(
             config.SETTINGS["search_properties"]
         )
@@ -1007,14 +1074,35 @@ class SettingsDialog(QDialog):
         self.search_sticky_chk.setChecked(
             config.SETTINGS["search_sticky_text"]
         )
-        gdl_search_in.addRow(self.search_properties_chk)
-        gdl_search_in.addRow(self.search_notes_chk)
-        gdl_search_in.addRow(self.search_sticky_chk)
+        self.search_edge_labels_chk.setChecked(
+            config.SETTINGS["search_edge_labels"]
+        )
+        self.search_group_names_chk.setChecked(
+            config.SETTINGS["search_group_names"]
+        )
+        self.search_canvas_text_chk.setChecked(
+            config.SETTINGS["search_canvas_text"]
+        )
+        gdl_search_in.addWidget(self.search_properties_chk, 0, 0)
+        gdl_search_in.addWidget(self.search_edge_labels_chk, 0, 1)
+
+        gdl_search_in.addWidget(self.search_notes_chk, 1, 0)
+        gdl_search_in.addWidget(self.search_group_names_chk, 1, 1)
+
+        gdl_search_in.addWidget(self.search_sticky_chk, 2, 0)
+        gdl_search_in.addWidget(self.search_canvas_text_chk, 2, 1)
+        gdl_search_in.setHorizontalSpacing(20)
+        gdl_search_in.setVerticalSpacing(6)
         vbox_pref.addLayout(pref_form)
         vbox_pref.addWidget(grp_search_in)
         lay.addWidget(grp_pref)
         lay.addStretch()
-        return w
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(w)
+        scroll.setFrameShape(QFrame.NoFrame)
+        return scroll
 
     # ── Types tab ─────────────────────────────────────────────────────────────
     def _build_types_tab(self):
@@ -1459,12 +1547,18 @@ class SettingsDialog(QDialog):
         self.temp_settings["app_ui_font_size"] = (
             self.app_ui_spin.value()
         )
+        self.temp_settings["edge_label_size"] = (
+            self.edge_label_size_spin.value()
+        )
         self.temp_settings["default_node_type"] = self.def_node_type.currentText()
         self.temp_settings["default_edge_type"] = self.def_edge_type.currentText()
         self.temp_settings["default_direction"] = self.def_direction.currentText()
         self.temp_settings["ask_edge_label_before_add"] = (
             self.ask_edge_label_chk.isChecked()
         )
+        self.temp_settings["hide_node_labels"] = self.hide_node_labels_chk.isChecked()
+        self.temp_settings["hide_edge_labels"] = self.hide_edge_labels_chk.isChecked()
+        self.temp_settings["hide_node_bodies"] = self.hide_node_bodies_chk.isChecked()
         self.temp_settings["search_properties"] = (
             self.search_properties_chk.isChecked()
         )
@@ -1476,6 +1570,9 @@ class SettingsDialog(QDialog):
         self.temp_settings["search_sticky_text"] = (
             self.search_sticky_chk.isChecked()
         )
+        self.temp_settings["search_edge_labels"] = self.search_edge_labels_chk.isChecked()
+        self.temp_settings["search_group_names"] = self.search_group_names_chk.isChecked()
+        self.temp_settings["search_canvas_text"] = self.search_canvas_text_chk.isChecked()
         # Guard against stale defaults
         if self.temp_settings["default_node_type"] not in self.temp_colors:
             self.temp_settings["default_node_type"] = next(iter(self.temp_colors), "default")
