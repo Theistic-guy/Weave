@@ -36,7 +36,13 @@ class GitResult:
 
 
 def _run(args, cwd=None, timeout=30):
-    """Run `git <args>` and capture the result. Never throws."""
+    """Run `git <args>` and capture the result. Never throws.
+
+    stdin is explicitly closed (DEVNULL): if git/ssh would otherwise prompt
+    interactively for a password, passphrase, or host-key confirmation, this
+    makes it fail immediately with a clear stderr message instead of hanging
+    silently until `timeout` expires.
+    """
     try:
         proc = subprocess.run(
             ["git"] + args,
@@ -44,6 +50,7 @@ def _run(args, cwd=None, timeout=30):
             capture_output=True,
             text=True,
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
         return GitResult(proc.returncode == 0, proc.stdout.strip(),
                           proc.stderr.strip(), proc.returncode)
@@ -188,12 +195,15 @@ def sync_now(repo_path, filenames, timeout=60):
     if not add_res.ok:
         return {"status": "error", "message": f"git add failed:\n{add_res.stderr}"}
 
-    status_res = _run(["status", "--porcelain"], cwd=repo_path)
+    status_res = _run(["status", "--porcelain", "--"] + filenames, cwd=repo_path)
     has_pending_changes = bool(status_res.stdout.strip())
 
     if has_pending_changes:
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        commit_res = _run(["commit", "-m", f"Weave sync — {ts}"], cwd=repo_path)
+        # Scoped with `--` so this only ever commits the .weave file(s) we
+        # just staged — never anything else that happened to be sitting in
+        # the index (e.g. a .bweave staged manually outside the app).
+        commit_res = _run(["commit", "-m", f"Weave sync — {ts}", "--"] + filenames, cwd=repo_path)
         if not commit_res.ok:
             combined = (commit_res.stdout + commit_res.stderr).lower()
             if "nothing to commit" not in combined:
