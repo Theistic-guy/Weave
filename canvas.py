@@ -253,7 +253,7 @@ class NodeLabelItem(QGraphicsTextItem):
         self._drag_start = None
         event.accept()
 
-    ──────────────────────────────
+
 #  NodeItem
 # ─────────────────────────────────────────────────────────────────────────────
 class NodeItem(QGraphicsItem):
@@ -404,27 +404,50 @@ class NodeItem(QGraphicsItem):
             draw_col.setAlpha(node_alpha)
         else:
             draw_col = col
-        hide_body = not self.body_visible()
+        body_visible = self.body_visible()
+        draw_body = body_visible or self.isSelected()
 
-        if not hide_body:
+        if draw_body:
+
+            # Hidden nodes temporarily reappear as ghosts when selected.
+            if not body_visible:
+                draw_col = QColor(draw_col)
+                draw_col.setAlpha(min(draw_col.alpha(), 120))
+
             painter.setBrush(QBrush(draw_col))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(QPointF(0, 0), r, r)
 
             if self.isSelected():
+                ring = QColor(col.lighter(150))
+
+                # Ghost nodes also get a softer selection ring.
+                if not body_visible:
+                    ring.setAlpha(180)
+
                 painter.setBrush(Qt.NoBrush)
-                painter.setPen(QPen(col.lighter(150), 2))
+                painter.setPen(QPen(ring, 2))
                 painter.drawEllipse(QPointF(0, 0), r + 4, r + 4)
 
-            filled = sum(1 for v in self.properties.values() if str(v).strip())
+            # Property count badge.
+            filled = sum(
+                1 for v in self.properties.values()
+                if str(v).strip()
+            )
+
             if filled:
                 badge = QRectF(r - 6, -r - 2, 12, 10)
                 painter.setBrush(QBrush(QColor("#ff6584")))
                 painter.setPen(Qt.NoPen)
                 painter.drawRoundedRect(badge, 3, 3)
+
                 painter.setPen(QPen(Qt.white))
                 painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
-                painter.drawText(badge, Qt.AlignCenter, str(filled))
+                painter.drawText(
+                    badge,
+                    Qt.AlignCenter,
+                    str(filled)
+                )
         
 
     def itemChange(self, change, value):
@@ -458,6 +481,7 @@ class NodeItem(QGraphicsItem):
         if self.body_visible_override is not None:
             return self.body_visible_override
         return not config.SETTINGS.get("hide_node_bodies", False)
+
     
     def mousePressEvent(self, event):
         return super().mousePressEvent(event)

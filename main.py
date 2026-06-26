@@ -871,6 +871,10 @@ class MainWindow(QMainWindow):
         fn(obj)
 
     def _hide_inspector(self):
+        if self.sidebar.inspector_pinned:
+            self.sidebar.restore_last_inspected()
+            return
+
         self.sidebar.show_empty()
         self.sidebar.set_collapsed(True)
 

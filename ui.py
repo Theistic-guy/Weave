@@ -7,10 +7,10 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout,QToolButton
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon
+from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon,QPalette
 from PyQt5.QtCore import Qt, pyqtSignal, QEvent
 
 import config
@@ -180,6 +180,13 @@ class Sidebar(QWidget):
         self._expanded_width = 290
         self._collapsed_width = 32
         self._collapsed = False
+        self.inspector_pinned = False
+        self._last_kind = None
+        self._last_item = None
+        self.pin_btn = QToolButton()
+        self.pin_btn.clicked.connect(self._toggle_pin)
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.setText("📌")
         self._section_collapsed = {"sticky": False, "notes": False}
         self.setMinimumWidth(240)
         self.setMaximumWidth(16777215)
@@ -201,7 +208,15 @@ class Sidebar(QWidget):
         self.collapse_btn.setFixedSize(self._collapsed_width, 42)
         self.collapse_btn.setToolTip("Collapse inspector")
         self.collapse_btn.clicked.connect(self.toggle_collapsed)
+        self.pin_btn.setToolTip("Pin inspector")
+        self.pin_btn.clicked.connect(self._toggle_pin)
+        
+        self.pin_btn.setAutoRaise(True)
+        self.pin_btn.setCursor(Qt.PointingHandCursor)
+        self.pin_btn.setFixedSize(24, 24)
+        header_lay.addSpacing(6)
         header_lay.addWidget(self.header, 1)
+        header_lay.addWidget(self.pin_btn)
         header_lay.addWidget(self.collapse_btn)
         root.addWidget(self.header_wrap)
 
@@ -229,7 +244,21 @@ class Sidebar(QWidget):
 
     def apply_style(self):
         sf = config.SETTINGS["sidebar_font_size"]
-        self.setStyleSheet(f"background:{gc('BG_PANEL')};")
+        self.setStyleSheet(f"background:{gc('BG_PANEL')}")
+        self.pin_btn.setStyleSheet(f"""
+        QToolButton {{
+            background: transparent;
+            border: none;
+            color: {gc('TEXT_MUTED')};
+            font-size: {sf+1}px;
+        }}
+
+        QToolButton:hover {{
+            color: {gc('TEXT_PRIMARY')};
+            background: {gc('BG_CARD')};
+            border-radius: 4px;
+        }}
+        """)
         self.header_wrap.setStyleSheet(
             f"QFrame {{ background:{gc('BG_DARK')};"
             f" border-bottom:1px solid {gc('BORDER')}; }}")
@@ -257,7 +286,12 @@ class Sidebar(QWidget):
             self._expanded_width = self.width()
 
         self._collapsed = collapsed
+        if collapsed:
+            self.setStyleSheet(f"background:{gc('BG_PANEL')};border-left: 1px solid {gc('BORDER')}")
+        else:
+            self.setStyleSheet(f"background:{gc('BG_PANEL')}")
         self.header.setVisible(not collapsed)
+        self.pin_btn.setVisible(not collapsed)
         self.scroll.setVisible(not collapsed)
         self.collapse_btn.setText("<" if collapsed else ">")
         self.collapse_btn.setToolTip(
@@ -367,6 +401,19 @@ class Sidebar(QWidget):
         lay.addWidget(btn)
         self.cl.addWidget(head)
         return not collapsed
+    
+    def _toggle_pin(self):
+        self.inspector_pinned = self.pin_btn.isChecked()
+
+        self.pin_btn.setText(
+            "📍" if self.inspector_pinned else "📌"
+        )
+
+        self.pin_btn.setToolTip(
+            "Unpin inspector"
+            if self.inspector_pinned
+            else "Pin inspector"
+        )
 
     def show_empty(self):
         self._node = self._edge = self._group = None
@@ -386,6 +433,8 @@ class Sidebar(QWidget):
         self._install_zoom_filters()
 
     def show_node(self, node):
+        self._last_kind = "node"
+        self._last_item = node
         self._node = node; self._edge = None; self._group = None
         self._clear()
         self.header.setText(f"Node  ·  {node.node_id}")
@@ -396,6 +445,8 @@ class Sidebar(QWidget):
         
 
     def show_edge(self, edge):
+        self._last_kind = "edge"
+        self._last_item = edge
         self._edge = edge; self._node = None; self._group = None
         self._clear()
         self.header.setText(f"Edge  ·  {edge.edge_id}")
@@ -404,6 +455,8 @@ class Sidebar(QWidget):
         self._install_zoom_filters()
 
     def show_group(self, group):
+        self._last_kind = "group"
+        self._last_item = group
         self._group = group; self._node = None; self._edge = None
         self._clear()
         sf = config.SETTINGS["sidebar_font_size"]
@@ -745,6 +798,29 @@ class Sidebar(QWidget):
             self._expanded_width = max(self.width(), 240)
         super().resizeEvent(event)
 
+    def restore_last_inspected(self):
+        if self._last_item is None:
+            self.show_empty()
+            return
+
+        if self._last_kind == "node":
+            if self._last_item.node_id in self.scene.nodes:
+                self.show_node(self._last_item)
+            else:
+                self.show_empty()
+
+        elif self._last_kind == "edge":
+            if self._last_item.edge_id in self.scene.edges:
+                self.show_edge(self._last_item)
+            else:
+                self.show_empty()
+
+        elif self._last_kind == "group":
+            if self._last_item.group_id in self.scene.groups:
+                self.show_group(self._last_item)
+            else:
+                self.show_empty()
+
 
 
 
@@ -960,6 +1036,11 @@ class SettingsDialog(QDialog):
                             border-top-left-radius:6px; border-top-right-radius:6px; }}
             QTabBar::tab:selected {{ background:{gc('BG_PANEL')}; color:{gc('ACCENT')}; font-weight:bold; }}
             QLabel  {{ color:{gc('TEXT_PRIMARY')}; background:transparent; }}
+            QCheckBox {{ color:{gc('TEXT_PRIMARY')}; background:transparent; }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+            }}
             QGroupBox {{ color:{gc('TEXT_MUTED')}; border:1px solid {gc('BORDER')}; border-radius:6px;
                          margin-top:8px; padding:12px 8px 8px; font-weight:bold; }}
             QGroupBox::title {{ subcontrol-origin:margin; left:8px; }}
@@ -1031,7 +1112,7 @@ class SettingsDialog(QDialog):
         vbox_pref = QVBoxLayout(grp_pref)
         pref_form = QFormLayout()
         self.ask_edge_label_chk = QCheckBox()
-        self.ask_edge_label_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
+        
 
         self.ask_edge_label_chk.setChecked(
             config.SETTINGS.get(
@@ -1042,9 +1123,7 @@ class SettingsDialog(QDialog):
         self.hide_node_labels_chk = QCheckBox()
         self.hide_edge_labels_chk = QCheckBox()
         self.hide_node_bodies_chk = QCheckBox()
-        self.hide_node_labels_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
-        self.hide_edge_labels_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
-        self.hide_node_bodies_chk.setStyleSheet("QCheckBox::indicator { width: 30px; height: 30px; }")
+        
         self.hide_node_labels_chk.setChecked(config.SETTINGS["hide_node_labels"])
         self.hide_edge_labels_chk.setChecked(config.SETTINGS["hide_edge_labels"])
         self.hide_node_bodies_chk.setChecked(config.SETTINGS["hide_node_bodies"])
@@ -1095,14 +1174,39 @@ class SettingsDialog(QDialog):
         gdl_search_in.setVerticalSpacing(6)
         vbox_pref.addLayout(pref_form)
         vbox_pref.addWidget(grp_search_in)
-        lay.addWidget(grp_pref)
-        lay.addStretch()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(w)
-        scroll.setFrameShape(QFrame.NoFrame)
-        return scroll
+        # ----------------------------------------------------------
+        # Preferences are the only section that keeps growing.
+        # Put just this section inside a scroll area so the dialog
+        # itself can remain a fixed height.
+        # ----------------------------------------------------------
+
+        pref_container = QWidget()
+        pref_layout = QVBoxLayout(pref_container)
+        pref_layout.setContentsMargins(0, 0, 0, 0)
+        pref_layout.addWidget(grp_pref)
+        pref_layout.addStretch()
+
+        pref_scroll = QScrollArea()
+        pref_scroll.setWidgetResizable(True)
+        pref_scroll.setFrameShape(QFrame.NoFrame)
+        pref_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        pref_scroll.setWidget(pref_container)
+
+        # Match the application's theme.
+        pref_scroll.viewport().setStyleSheet(
+            f"background:{gc('BG_PANEL')};"
+        )
+        pref_container.setStyleSheet(
+            f"background:{gc('BG_PANEL')};"
+        )
+
+        # Give the scroll area a reasonable minimum height.
+        pref_scroll.setMinimumHeight(220)
+
+        lay.addWidget(pref_scroll)
+
+        return w
 
     # ── Types tab ─────────────────────────────────────────────────────────────
     def _build_types_tab(self):

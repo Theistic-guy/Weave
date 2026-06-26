@@ -1,18 +1,19 @@
-stress test the app
+#TESTing Verticals
+ - stress testing the app
 
-when a new file is loaded from file explorer then i hope all the varialbes, refrences and state is cleared for the previous loaded one
-
-can we offload a task to async thread or somethign (but very dangerous if the main ui is still active)
- - as an operation might conflict
-
- a loader in the main ui can help while the async thread does the background stuff the main ui
- can keep showing a loading bar
+ - Dangling references & State state 
+    - when a new file is loaded from file explorer then i hope all the varialbes, refrences and state is cleared for the previous loaded one
+    - copying, pasting , deleting
+    - loading unloading saved/unsaved file changes thru toolbar or thru file explorer
+           
 
 
- lock the inspector sidebar
 
-circle node hide,unhide
 
-a specific size clamp for edges
 
- #Bugs
+#Improvements
+
+- Perf. incr. : Multithreading, Asyncio etc
+    - can we offload a task to async thread or somethign (but very dangerous if the main ui is still active as an operation might conflict)
+
+    - a loader in the main ui can help while the async thread does the background stuff the main ui can keep showing a loading bar
