@@ -220,7 +220,36 @@ class StickyOverlay:
             self._scene.removeItem(self._txt)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# Node label can support node dragging
+class NodeLabelItem(QGraphicsTextItem):
+
+    def __init__(self, parent_node):
+        super().__init__("", parent_node)
+        self.parent_node = parent_node
+        self._drag_start = None
+
+    def mousePressEvent(self, event):
+        self._drag_start = event.scenePos()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None:
+            return
+
+        delta = event.scenePos() - self._drag_start
+
+        self.parent_node.setPos(
+            self.parent_node.pos() + delta
+        )
+
+        self._drag_start = event.scenePos()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        event.accept()
+
+
 #  NodeItem
 # ─────────────────────────────────────────────────────────────────────────────
 class NodeItem(QGraphicsItem):
@@ -370,25 +399,51 @@ class NodeItem(QGraphicsItem):
             draw_col.setAlpha(node_alpha)
         else:
             draw_col = col
+        body_visible = self.body_visible()
+        draw_body = body_visible or self.isSelected()
 
-        painter.setBrush(QBrush(draw_col))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(0, 0), r, r)
+        if draw_body:
 
-        if self.isSelected():
-            painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(col.lighter(150), 2))
-            painter.drawEllipse(QPointF(0, 0), r + 4, r + 4)
+            # Hidden nodes temporarily reappear as ghosts when selected.
+            if not body_visible:
+                draw_col = QColor(draw_col)
+                draw_col.setAlpha(min(draw_col.alpha(), 120))
 
-        filled = sum(1 for v in self.properties.values() if str(v).strip())
-        if filled:
-            badge = QRectF(r - 6, -r - 2, 12, 10)
-            painter.setBrush(QBrush(QColor("#ff6584")))
+            painter.setBrush(QBrush(draw_col))
             painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(badge, 3, 3)
-            painter.setPen(QPen(Qt.white))
-            painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
-            painter.drawText(badge, Qt.AlignCenter, str(filled))
+            painter.drawEllipse(QPointF(0, 0), r, r)
+
+            if self.isSelected():
+                ring = QColor(col.lighter(150))
+
+                # Ghost nodes also get a softer selection ring.
+                if not body_visible:
+                    ring.setAlpha(180)
+
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(ring, 2))
+                painter.drawEllipse(QPointF(0, 0), r + 4, r + 4)
+
+            # Property count badge.
+            filled = sum(
+                1 for v in self.properties.values()
+                if str(v).strip()
+            )
+
+            if filled:
+                badge = QRectF(r - 6, -r - 2, 12, 10)
+                painter.setBrush(QBrush(QColor("#ff6584")))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(badge, 3, 3)
+
+                painter.setPen(QPen(Qt.white))
+                painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
+                painter.drawText(
+                    badge,
+                    Qt.AlignCenter,
+                    str(filled)
+                )
+        
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -416,6 +471,21 @@ class NodeItem(QGraphicsItem):
         for e in self.edges:
             e.update_path()
         self.update()
+
+    def body_visible(self):
+        if self.body_visible_override is not None:
+            return self.body_visible_override
+        return not config.SETTINGS.get("hide_node_bodies", False)
+
+    
+    def mousePressEvent(self, event):
+        return super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        return super().mouseMoveEvent(event)
+
+    def connection_radius(self):
+        return self.radius if self.body_visible() else 2
 
     # ── Serialisation ─────────────────────────────────────────────────────────
     def to_dict(self):
