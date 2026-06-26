@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon,QPalette
-from PyQt5.QtCore import Qt, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QFileSystemWatcher, QTimer
 
 import config
 from config import gc, qc
@@ -798,28 +798,47 @@ class Sidebar(QWidget):
             self._expanded_width = max(self.width(), 240)
         super().resizeEvent(event)
 
+    def clear_pin_memory(self):
+        """Drop any remembered last-inspected item.
+
+        Must be called whenever the scene's items are wholesale replaced or
+        cleared (new file load, Clear Graph) — otherwise a pinned inspector
+        keeps a reference to a now-deleted QGraphicsItem, and the next
+        deselect crashes with 'wrapped C/C++ object has been deleted'.
+        """
+        self._last_item = None
+        self._last_kind = None
+
     def restore_last_inspected(self):
         if self._last_item is None:
             self.show_empty()
             return
 
-        if self._last_kind == "node":
-            if self._last_item.node_id in self.scene.nodes:
-                self.show_node(self._last_item)
-            else:
-                self.show_empty()
+        try:
+            if self._last_kind == "node":
+                if self._last_item.node_id in self.scene.nodes:
+                    self.show_node(self._last_item)
+                else:
+                    self.show_empty()
 
-        elif self._last_kind == "edge":
-            if self._last_item.edge_id in self.scene.edges:
-                self.show_edge(self._last_item)
-            else:
-                self.show_empty()
+            elif self._last_kind == "edge":
+                if self._last_item.edge_id in self.scene.edges:
+                    self.show_edge(self._last_item)
+                else:
+                    self.show_empty()
 
-        elif self._last_kind == "group":
-            if self._last_item.group_id in self.scene.groups:
-                self.show_group(self._last_item)
-            else:
-                self.show_empty()
+            elif self._last_kind == "group":
+                if self._last_item.group_id in self.scene.groups:
+                    self.show_group(self._last_item)
+                else:
+                    self.show_empty()
+        except RuntimeError:
+            # The underlying C++ item was deleted out from under us (e.g. a
+            # file load/Clear Graph happened without clear_pin_memory() being
+            # called from somewhere it should have been). Fail safe instead
+            # of crashing.
+            self.clear_pin_memory()
+            self.show_empty()
 
 
 
@@ -1796,6 +1815,20 @@ class FileExplorer(QWidget):
         self._root_path  = None   # folder path (or None when single-file mode)
         self._file_path  = None   # single file path
 
+        # ── Live filesystem watch state ─────────────────────────────────────
+        # _path_to_item: normalized path -> QTreeWidgetItem currently showing it.
+        # Rebuilt from scratch on every load_folder()/load_single_file() call —
+        # never carried over from a previous folder/file.
+        self._path_to_item = {}
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_dir_changed)
+        self._watcher.fileChanged.connect(self._on_file_changed)
+        self._pending_refresh_dirs = set()
+        self._pending_single_file_check = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._process_pending_refreshes)
+
         self.setFixedWidth(self._EXPANDED_W)
         self.setMinimumWidth(self._COLLAPSED_W)
 
@@ -1869,6 +1902,7 @@ class FileExplorer(QWidget):
     # ── Public API ────────────────────────────────────────────────────────────
     def load_single_file(self, path: str):
         """Show exactly one file entry (Open File mode)."""
+        self._teardown_watch_state()
         self._root_path = None
         self._file_path = path
         self._tree.clear()
@@ -1881,8 +1915,18 @@ class FileExplorer(QWidget):
         self._hint.hide()
         self._tree.show()
 
+        self._path_to_item[self._norm(path)] = item
+        # Watch the *parent* folder so a delete/rename/replace of this one
+        # file (e.g. from outside the app, or a git pull) is still noticed —
+        # QFileSystemWatcher can't watch a path that doesn't exist, and a
+        # single file offers no useful directoryChanged signal of its own.
+        parent_dir = os.path.dirname(os.path.abspath(path))
+        if parent_dir and os.path.isdir(parent_dir):
+            self._watcher.addPath(parent_dir)
+
     def load_folder(self, folder: str):
         """Show the folder tree (Open Folder mode), only supported files/dirs."""
+        self._teardown_watch_state()
         self._root_path = folder
         self._file_path = None
         self._tree.clear()
@@ -1893,6 +1937,8 @@ class FileExplorer(QWidget):
         self._store_item_name(root_item, os.path.basename(folder) or folder)
         self._apply_item_visuals(root_item, True)
         self._set_folder_label(root_item, True)
+        self._path_to_item[self._norm(folder)] = root_item
+        self._watch_dir(folder)
         self._populate(root_item, folder)
         self._tree.addTopLevelItem(root_item)
         root_item.setExpanded(True)
@@ -1962,9 +2008,10 @@ class FileExplorer(QWidget):
                 self._store_item_name(child, entry.name)
                 self._apply_item_visuals(child, True)
                 self._set_folder_label(child, False)
-                
 
                 if self._dir_has_content(entry.path):
+                    self._path_to_item[self._norm(entry.path)] = child
+                    self._watch_dir(entry.path)
                     self._populate(child, entry.path)
                     parent_item.addChild(child)
 
@@ -1975,6 +2022,7 @@ class FileExplorer(QWidget):
                     child.setData(0, Qt.UserRole, entry.path)
                     child.setToolTip(0, entry.path)
                     self._apply_item_visuals(child, False)
+                    self._path_to_item[self._norm(entry.path)] = child
                     parent_item.addChild(child)
 
     def _dir_has_content(self, folder: str) -> bool:
@@ -1992,6 +2040,146 @@ class FileExplorer(QWidget):
         except PermissionError:
             pass
         return False
+
+    # ── Filesystem watch / live refresh ─────────────────────────────────────────
+    # Design: QFileSystemWatcher only ever drives *what the tree displays*. It
+    # never touches canvas/editor state — content the user is editing is never
+    # reloaded out from under them just because a file changed on disk.
+    @staticmethod
+    def _norm(path: str) -> str:
+        return os.path.normpath(os.path.abspath(path))
+
+    def _watch_dir(self, path: str):
+        """Add a directory to the watcher, ignoring duplicates/missing paths."""
+        if path and os.path.isdir(path) and path not in self._watcher.directories():
+            self._watcher.addPath(path)
+
+    def _teardown_watch_state(self):
+        """Fully reset watch state. Called at the start of every
+        load_folder()/load_single_file() — never carry watched paths,
+        pending refreshes, or the path->item map over from a previous
+        folder/file."""
+        dirs = self._watcher.directories()
+        if dirs:
+            self._watcher.removePaths(dirs)
+        files = self._watcher.files()
+        if files:
+            self._watcher.removePaths(files)
+        self._path_to_item.clear()
+        self._pending_refresh_dirs.clear()
+        self._pending_single_file_check = False
+        self._refresh_timer.stop()
+
+    def _on_dir_changed(self, path: str):
+        if self._root_path is None:
+            # Single-file mode: the only thing we watch is the open file's
+            # parent folder, purely to notice if *that one file* disappears
+            # or gets replaced. Nothing else in that folder is shown.
+            self._pending_single_file_check = True
+        else:
+            self._pending_refresh_dirs.add(self._norm(path))
+        self._refresh_timer.start(250)  # debounce rapid bursts (e.g. a git pull)
+
+    def _on_file_changed(self, path: str):
+        # Currently informational only (content edits aren't reflected in the
+        # tree); deletion is handled via the parent directory's
+        # directoryChanged, which always fires alongside this.
+        pass
+
+    def _process_pending_refreshes(self):
+        if self._pending_single_file_check:
+            self._pending_single_file_check = False
+            self._refresh_single_file_presence()
+            return
+
+        dirs, self._pending_refresh_dirs = self._pending_refresh_dirs, set()
+        for d in dirs:
+            self._refresh_branch(d)
+
+    def _refresh_single_file_presence(self):
+        """Single-file mode: if the one tracked file vanished (deleted,
+        renamed, or replaced from outside the app), fall back to the empty
+        hint state rather than show a stale, dead tree entry."""
+        if not self._file_path or os.path.exists(self._file_path):
+            return
+        self._teardown_watch_state()
+        self._root_path = None
+        self._file_path = None
+        self._tree.clear()
+        self._hint.show()
+        self._tree.hide()
+
+    def _forget_subtree(self, item: QTreeWidgetItem):
+        """Remove `item` and all its descendants from _path_to_item before
+        the item itself is discarded, so the map never holds stale entries
+        pointing at deleted QTreeWidgetItems."""
+        path = item.data(0, Qt.UserRole)
+        if path:
+            self._path_to_item.pop(self._norm(path), None)
+        for i in range(item.childCount()):
+            self._forget_subtree(item.child(i))
+
+    def _capture_expanded(self, item: QTreeWidgetItem) -> set:
+        """Snapshot which descendant folder paths are currently expanded."""
+        expanded = set()
+        def walk(it):
+            p = it.data(0, Qt.UserRole)
+            if p and it.isExpanded():
+                expanded.add(self._norm(p))
+            for i in range(it.childCount()):
+                walk(it.child(i))
+        walk(item)
+        return expanded
+
+    def _restore_expanded(self, item: QTreeWidgetItem, expanded: set):
+        def walk(it):
+            p = it.data(0, Qt.UserRole)
+            if p and self._norm(p) in expanded:
+                it.setExpanded(True)
+                self._update_folder_icon(it)
+            for i in range(it.childCount()):
+                walk(it.child(i))
+        walk(item)
+
+    def _refresh_branch(self, dir_path: str):
+        """Rebuild the children of whichever tree item corresponds to
+        dir_path, preserving expand-state and keeping the watcher's set of
+        watched directories in sync with what's actually on disk."""
+        norm = self._norm(dir_path)
+        item = self._path_to_item.get(norm)
+        if item is None:
+            return  # stale/unknown path — folder no longer part of this tree
+
+        if not os.path.isdir(dir_path):
+            # The directory itself was removed/renamed; let the *parent's*
+            # own refresh (triggered by its own directoryChanged) drop this
+            # row. Just stop watching it ourselves to avoid a dangling watch.
+            if dir_path in self._watcher.directories():
+                self._watcher.removePath(dir_path)
+            return
+
+        expanded = self._capture_expanded(item)
+        was_root_expanded = item.isExpanded()
+
+        for i in reversed(range(item.childCount())):
+            child = item.takeChild(i)
+            self._forget_subtree(child)
+
+        self._populate(item, dir_path)
+        item.setExpanded(was_root_expanded)
+        self._restore_expanded(item, expanded)
+        self._update_folder_icon(item)
+        self._prune_orphaned_watches()
+
+    def _prune_orphaned_watches(self):
+        """Drop any watched directory that's no longer represented in the
+        tree — e.g. a folder that still exists on disk but lost its last
+        qualifying file and is therefore no longer shown. Without this,
+        such a directory would stay watched indefinitely for no purpose."""
+        tracked = set(self._path_to_item.keys())
+        for d in self._watcher.directories():
+            if self._norm(d) not in tracked:
+                self._watcher.removePath(d)
 
     def _on_item_activated(self, item: QTreeWidgetItem, _col: int):
         path = item.data(0, Qt.UserRole)

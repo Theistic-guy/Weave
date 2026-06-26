@@ -615,6 +615,7 @@ class MainWindow(QMainWindow):
         self._dirty     = False
         self._fit_view()
         self._update_status()
+        self.sidebar.clear_pin_memory()
         self.sidebar.show_empty()
         self._refresh_all_styles()
 
@@ -793,6 +794,7 @@ class MainWindow(QMainWindow):
         self.scene.clear_all()
         self._file_path = None
         self._dirty     = False
+        self.sidebar.clear_pin_memory()
         self.sidebar.show_empty()
         self._update_status()
 
@@ -808,6 +810,7 @@ class MainWindow(QMainWindow):
         if r == QMessageBox.Yes:
             self.scene.clear_all()
             self._dirty = True
+            self.sidebar.clear_pin_memory()
             self.sidebar.show_empty()
             self._update_status()
 
