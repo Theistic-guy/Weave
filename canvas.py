@@ -943,7 +943,7 @@ class GraphScene(QGraphicsScene):
 
     def add_text(self, text="Text", x=0, y=0, color=None,
                  font_size=18, bold=False, italic=False, item_id=None):
-        col = color or gc("TEXT_PRIMARY")
+        col = color or  get_neutral_color()
         t = CanvasTextItem(text=text, x=x, y=y, color=col,
                            font_size=font_size, bold=bold, italic=italic,
                            item_id=item_id)
@@ -1569,6 +1569,7 @@ class CanvasView(QGraphicsView):
 
         menu = QMenu(self)
         menu.setStyleSheet(self._menu_style())
+        self.setStyleSheet(self._input_dialog_sytle_sheet())
 
         # ── Node context ──────────────────────────────────────────────────────
         if node:
@@ -1849,7 +1850,7 @@ class CanvasView(QGraphicsView):
             elif ch == a_txt:
                 txt, ok = QInputDialog.getMultiLineText(
                     self, "Add Text", "Content:", "Heading")
-                if ok and txt:
+                if ok and txt.strip():
                     self.scene().add_text(text=txt, x=scene_pos.x(), y=scene_pos.y())
             elif a_copy and ch == a_copy:
                 self._copy_selected()
@@ -1861,6 +1862,55 @@ class CanvasView(QGraphicsView):
                 f" border:1px solid {gc('BORDER')}; border-radius:6px; padding:4px; }}"
                 f" QMenu::item {{ padding:6px 20px; border-radius:4px; }}"
                 f" QMenu::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
-                f" QMenu::separator {{ background:{gc('BORDER')}; height:1px; margin:4px 8px; }}")
+                f" QMenu::separator {{ background:{gc('BORDER')}; height:1px; margin:4px 8px; }}"
+        )
+    def _input_dialog_sytle_sheet(self):
+        return (f"QInputDialog {{ "
+                f"background:{gc('BG_PANEL')}; "
+                f"color:{gc('TEXT_PRIMARY')}; "
+                f"}}"
+
+                f"QInputDialog QLabel {{ "
+                f"color:{gc('TEXT_PRIMARY')}; "
+                f"background:transparent; "
+                f"}}"
+
+                f"QInputDialog QLineEdit {{ "
+                f"background:{gc('BG_CARD')}; "
+                f"color:{gc('TEXT_PRIMARY')}; "
+                f"border:1px solid {gc('BORDER')}; "
+                f"border-radius:4px; "
+                f"padding:4px; "
+                f"}}"
+
+                f"QInputDialog QPushButton {{ "
+                f"background:{gc('BG_CARD')}; "
+                f"color:{gc('TEXT_PRIMARY')}; "
+                f"border:1px solid {gc('BORDER')}; "
+                f"border-radius:4px; "
+                f"padding:5px 14px; "
+                f"}}"
+
+                f"QInputDialog QPushButton:hover {{ "
+                f"background:{gc('ACCENT')}; "
+                f"color:white; "
+                f"}}"
+
+                f"QInputDialog QTextEdit {{ "
+                f"background:{gc('BG_CARD')}; "
+                f"color:{gc('TEXT_PRIMARY')}; "
+                f"border:1px solid {gc('BORDER')}; "
+                f"border-radius:4px; "
+                f"padding:4px; "
+                f"}}"
+
+                f"QInputDialog QPlainTextEdit {{ "
+                f"background:{gc('BG_CARD')}; "
+                f"color:{gc('TEXT_PRIMARY')}; "
+                f"border:1px solid {gc('BORDER')}; "
+                f"border-radius:4px; "
+                f"padding:4px; "
+                f"}}"
+                )
     def focusNextPrevChild(self, next):
         return False

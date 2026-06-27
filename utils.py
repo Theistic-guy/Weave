@@ -31,3 +31,6 @@ def graph_color(hex_color: str) -> QColor:
             is_dark_theme()
         )
     )
+
+def get_neutral_color() -> str:
+    return theme_color("#000000",is_dark_theme())

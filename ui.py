@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout,QToolButton
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout,QToolButton,
+    QMenu, QAction
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon,QPalette
@@ -1802,9 +1803,22 @@ class FileExplorer(QWidget):
 
     Signals
     -------
-    open_file(str)   — emitted when the user double-clicks / activates a file
+    open_file(str)        — emitted when the user double-clicks / activates a file,
+                             or right after a successful New File creation.
+    file_renamed(str,str) — emitted (old_path, new_path) after a successful rename.
+    file_deleted(str)     — emitted (path) after a successful delete (file or folder).
+
+    Callback hook
+    -------------
+    confirm_unsaved_for: Optional[Callable[[str], bool]]
+        Set by MainWindow after construction. Called before any rename/delete
+        that could affect the currently-open file; must return True for the
+        operation to proceed. FileExplorer has no notion of "open" or "dirty"
+        itself — that judgment always belongs to whoever owns the canvas.
     """
-    open_file = pyqtSignal(str)
+    open_file     = pyqtSignal(str)
+    file_renamed  = pyqtSignal(str, str)
+    file_deleted  = pyqtSignal(str)
 
     _EXPANDED_W  = 240
     _COLLAPSED_W = 32
@@ -1814,6 +1828,12 @@ class FileExplorer(QWidget):
         self._collapsed  = False
         self._root_path  = None   # folder path (or None when single-file mode)
         self._file_path  = None   # single file path
+        self.confirm_unsaved_for = None   # set externally by MainWindow
+
+        # Folders explicitly created via "New Folder" this session, so they
+        # stay visible even while empty (the normal rule hides empty folders
+        # to cut clutter from unrelated directories).
+        self._force_show_dirs = set()
 
         # ── Live filesystem watch state ─────────────────────────────────────
         # _path_to_item: normalized path -> QTreeWidgetItem currently showing it.
@@ -1848,6 +1868,7 @@ class FileExplorer(QWidget):
             f"color:{gc('TEXT_PRIMARY')}; font-weight:bold; font-size:13px;"
             f" background:transparent; border:none;")
         h_lay.addWidget(self._title, 1)
+        
 
         self._toggle_btn = QPushButton("‹")
         self._toggle_btn.setFixedSize(28, 28)
@@ -1873,6 +1894,8 @@ class FileExplorer(QWidget):
         self._tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self._tree.itemActivated.connect(self._on_item_activated)
         self._tree.setStyleSheet(self._tree_style())
+        self._tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._show_context_menu)
 
 
         self._init_icons()
@@ -1952,7 +1975,16 @@ class FileExplorer(QWidget):
         self._hint.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; font-size:11px;"
             f" padding:20px 12px; background:transparent;")
-        self.setStyleSheet(f"background:{gc('BG_PANEL')};")
+        self.setStyleSheet(f"""
+            QInputDialog {{ background: {gc('BG_PANEL')}; color: {gc('TEXT_PRIMARY')}; }}
+            QPushButton {{ background: {gc('BG_CARD')}; color: {gc('TEXT_PRIMARY')}; }}
+            QLabel {{ color: {gc('TEXT_PRIMARY')}; background: transparent; }}
+            QLineEdit {{ background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')} }}
+        """)
+
+
+
+        
 
     def toggle_collapsed(self):
         self.set_collapsed(not self._collapsed)
@@ -2009,7 +2041,7 @@ class FileExplorer(QWidget):
                 self._apply_item_visuals(child, True)
                 self._set_folder_label(child, False)
 
-                if self._dir_has_content(entry.path):
+                if self._dir_has_content(entry.path) or self._norm(entry.path) in self._force_show_dirs:
                     self._path_to_item[self._norm(entry.path)] = child
                     self._watch_dir(entry.path)
                     self._populate(child, entry.path)
@@ -2068,6 +2100,7 @@ class FileExplorer(QWidget):
         self._path_to_item.clear()
         self._pending_refresh_dirs.clear()
         self._pending_single_file_check = False
+        self._force_show_dirs.clear()
         self._refresh_timer.stop()
 
     def _on_dir_changed(self, path: str):
@@ -2192,6 +2225,225 @@ class FileExplorer(QWidget):
                     "Only .json files exported by Weave are supported.")
                 return
             self.open_file.emit(path)
+
+    # ── Context menu / New File / New Folder / Rename / Delete ─────────────────
+    def _show_context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background:{gc('BG_PANEL')}; color:{gc('TEXT_PRIMARY')};"
+            f" border:1px solid {gc('BORDER')}; border-radius:6px; padding:4px; }}"
+            f" QMenu::item {{ padding:6px 20px; border-radius:4px; }}"
+            f" QMenu::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
+            f" QMenu::separator {{ background:{gc('BORDER')}; height:1px; margin:4px 8px; }}"
+        )
+
+        if item is None:
+            # Right-click on empty space: only meaningful in folder mode,
+            # and only as "create something at the root".
+            if self._root_path is None:
+                return
+            target_dir = self._root_path
+            menu.addAction("📄  New File…", lambda: self._new_file(target_dir))
+            menu.addAction("📁  New Folder…", lambda: self._new_folder(target_dir))
+            menu.exec_(self._tree.viewport().mapToGlobal(pos))
+            return
+
+        path = item.data(0, Qt.UserRole)
+        if not path:
+            return
+        is_dir = os.path.isdir(path)
+        is_root = (self._root_path is not None and self._norm(path) == self._norm(self._root_path))
+
+        if is_dir:
+            menu.addAction("📄  New File…", lambda: self._new_file(path))
+            menu.addAction("📁  New Folder…", lambda: self._new_folder(path))
+            if not is_root:
+                menu.addSeparator()
+                menu.addAction("✏️  Rename…", lambda: self._rename_path(item, path))
+                menu.addAction("🗑️  Delete…", lambda: self._delete_path(item, path))
+        else:
+            menu.addAction("📂  Open", lambda: self._on_item_activated(item, 0))
+            menu.addSeparator()
+            menu.addAction("✏️  Rename…", lambda: self._rename_path(item, path))
+            menu.addAction("🗑️  Delete…", lambda: self._delete_path(item, path))
+
+        menu.addSeparator()
+        menu.addAction("🔎  Reveal in file manager", lambda: self._reveal_in_file_manager(path))
+        menu.addAction("📋  Copy path", lambda: QApplication.clipboard().setText(path))
+
+        menu.exec_(self._tree.viewport().mapToGlobal(pos))
+
+    def _validate_new_name(self, name: str, parent_dir: str) -> str:
+        """Returns a cleaned name, or '' (with a dialog shown) if invalid."""
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Invalid name", "Name can't be empty.")
+            return ""
+        if os.sep in name or (os.altsep and os.altsep in name) or name in (".", ".."):
+            QMessageBox.warning(self, "Invalid name",
+                                 "Name can't contain a path separator.")
+            return ""
+        if os.path.exists(os.path.join(parent_dir, name)):
+            QMessageBox.warning(self, "Already exists",
+                                 f"'{name}' already exists in this folder.")
+            return ""
+        return name
+
+    def _unique_name(self, parent_dir: str, base: str, ext: str) -> str:
+        """'Untitled.weave' -> 'Untitled (1).weave' -> ... if a collision exists."""
+        candidate = f"{base}{ext}"
+        n = 1
+        while os.path.exists(os.path.join(parent_dir, candidate)):
+            candidate = f"{base} ({n}){ext}"
+            n += 1
+        return candidate
+
+    def _new_file(self, parent_dir: str):
+        default_name = self._unique_name(parent_dir, "Untitled", ".weave")
+        name, ok = QInputDialog.getText(self, "New File", "File name:", text=default_name)
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if not os.path.splitext(name)[1]:
+            name += ".weave"
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in (".weave", ".json"):
+            QMessageBox.warning(self, "Unsupported type",
+                "New files can only be created as .weave or .json — "
+                "use File ▾ Export for .bweave.")
+            return
+        name = self._validate_new_name(name, parent_dir)
+        if not name:
+            return
+
+        path = os.path.join(parent_dir, name)
+        try:
+            empty_graph = {
+                "schema": config.schema_block(),
+                "nodes": [], "edges": [], "texts": [], "groups": [],
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(empty_graph, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Couldn't create file", str(e))
+            return
+
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+        self.open_file.emit(path)
+
+    def _new_folder(self, parent_dir: str):
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="New Folder")
+        if not ok:
+            return
+        name = self._validate_new_name(name, parent_dir)
+        if not name:
+            return
+
+        path = os.path.join(parent_dir, name)
+        try:
+            os.makedirs(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Couldn't create folder", str(e))
+            return
+
+        self._force_show_dirs.add(self._norm(path))
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+
+    def _rename_path(self, item: QTreeWidgetItem, path: str):
+        if self.confirm_unsaved_for and not self.confirm_unsaved_for(path):
+            return
+
+        old_name = os.path.basename(path)
+        parent_dir = os.path.dirname(path)
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=old_name)
+        if not ok or new_name.strip() == old_name:
+            return
+        new_name = self._validate_new_name(new_name, parent_dir)
+        if not new_name:
+            return
+
+        new_path = os.path.join(parent_dir, new_name)
+        try:
+            os.rename(path, new_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Rename failed", str(e))
+            return
+
+        if self._norm(path) in self._force_show_dirs:
+            self._force_show_dirs.discard(self._norm(path))
+            self._force_show_dirs.add(self._norm(new_path))
+
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+        elif self._file_path and self._norm(path) == self._norm(self._file_path):
+            self.load_single_file(new_path)
+
+        self.file_renamed.emit(path, new_path)
+
+    def _delete_path(self, item: QTreeWidgetItem, path: str):
+        if self.confirm_unsaved_for and not self.confirm_unsaved_for(path):
+            return
+
+        is_dir = os.path.isdir(path)
+        name = os.path.basename(path)
+        msg = (f"Delete the folder '{name}' and everything inside it?\nThis can't be undone."
+               if is_dir else
+               f"Delete '{name}'?\nThis can't be undone.")
+        r = QMessageBox.warning(self, "Delete", msg,
+                                 QMessageBox.Yes | QMessageBox.Cancel,
+                                 QMessageBox.Cancel)
+        if r != QMessageBox.Yes:
+            return
+
+        parent_dir = os.path.dirname(path)
+        try:
+            if is_dir:
+                import shutil
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Delete failed", str(e))
+            return
+
+        self._force_show_dirs.discard(self._norm(path))
+
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+        elif self._file_path and self._norm(path) == self._norm(self._file_path):
+            self._teardown_watch_state()
+            self._root_path = None
+            self._file_path = None
+            self._tree.clear()
+            self._hint.show()
+            self._tree.hide()
+
+        self.file_deleted.emit(path)
+
+    def _reveal_in_file_manager(self, path: str):
+        import subprocess, sys
+        target = path if os.path.isdir(path) else os.path.dirname(path)
+        try:
+            if sys.platform.startswith("darwin"):
+                if os.path.isfile(path):
+                    subprocess.Popen(["open", "-R", path])
+                else:
+                    subprocess.Popen(["open", target])
+            elif sys.platform.startswith("win"):
+                if os.path.isfile(path):
+                    subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+                else:
+                    subprocess.Popen(["explorer", os.path.normpath(target)])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't open file manager", str(e))
 
     def _sync_visibility(self):
         collapsed = self._collapsed
