@@ -12,9 +12,17 @@ from PyQt5.QtGui import QFont, QKeySequence, QBrush, QPainter
 
 import config
 from config import gc, qc
+import gitsync
 from canvas import GraphScene, CanvasView, NodeItem, EdgeItem, CanvasTextItem, NodeGroup
 from ui import Sidebar, SearchBar, SettingsDialog, FileExplorer
-
+def build_app_stylesheet():
+    return f"""
+        QInputDialog, QMessageBox {{ background:{config.gc('BG_PANEL')}; color:{config.gc('TEXT_PRIMARY')}; }}
+        QInputDialog QLineEdit {{ background:{config.gc('BG_CARD')}; color:{config.gc('TEXT_PRIMARY')};
+            border:1px solid {config.gc('BORDER')}; border-radius:4px; padding:4px; }}
+        QInputDialog QPushButton, QMessageBox QPushButton {{ background:{config.gc('ACCENT')}; color:white;
+            border:none; border-radius:4px; padding:5px 14px; }}
+    """
 class CanvasOverlayHost(QWidget):
     def __init__(self, view, sidebar, parent=None):
         super().__init__(parent)
@@ -125,6 +133,9 @@ class MainWindow(QMainWindow):
 
         self.file_explorer = FileExplorer()
         self.file_explorer.open_file.connect(self._open_file_from_explorer)
+        self.file_explorer.confirm_unsaved_for = self._confirm_unsaved_for_path
+        self.file_explorer.file_renamed.connect(self._on_explorer_file_renamed)
+        self.file_explorer.file_deleted.connect(self._on_explorer_file_deleted)
         self.outer_splitter.addWidget(self.file_explorer)
 
         # Canvas + floating inspector overlay
@@ -258,6 +269,7 @@ class MainWindow(QMainWindow):
         sep()
         btn("🌗 Theme",   "Toggle theme (T)",          self._toggle_theme,    "T")
         btn("⚙ Settings", "Settings",                 self._open_settings)
+        btn("🔄 Sync",    "Git sync (Ctrl+Alt+S)",     self._sync_now,        "Ctrl+Alt+S")
         sep()
         btn("🗑 Clear",   "Clear graph",               self._clear_all)
 
@@ -483,6 +495,10 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         config.CURRENT_THEME = "dark" if config.CURRENT_THEME == "light" else "light"
         self._refresh_all_styles()
+        for text_item in self.scene.texts.values():
+            text_item.refresh_theme()
+        self.scene.update()
+        # app.setStyleSheet(build_app_stylesheet())
 
     def _refresh_all_styles(self):
         """Re-apply every style after theme or font-size change."""
@@ -514,6 +530,77 @@ class MainWindow(QMainWindow):
             self._refresh_all_styles()
             self._dirty = True
             self._update_status()
+
+    def _sync_now(self):
+        """Toolbar/Ctrl+Alt+S action: add -> commit -> pull --rebase -> push
+        against the repo linked in Settings → Sync. Never auto-merges graph
+        JSON — on a real conflict it stops and tells the user instead."""
+        repo_path  = config.SETTINGS.get("sync_repo_path", "").strip()
+        remote_url = config.SETTINGS.get("sync_remote_url", "").strip()
+
+        if not repo_path or not remote_url or not gitsync.is_git_repo(repo_path):
+            QMessageBox.information(
+                self, "Not linked",
+                "No linked git repo yet.\n\n"
+                "Go to Settings → Sync to link this folder to a remote first.")
+            return
+
+        weave_files = gitsync.find_weave_files(repo_path)
+        if not weave_files:
+            QMessageBox.information(
+                self, "Nothing to sync",
+                f"No .weave file found in the linked folder:\n{repo_path}")
+            return
+
+        if not self._confirm_sync_target_matches_context(repo_path):
+            return
+
+        self.status.showMessage("Syncing…")
+        QApplication.processEvents()
+        result = gitsync.sync_now(repo_path, weave_files)
+
+        if result["status"] == "synced":
+            self.status.showMessage("Synced.", 4000)
+        elif result["status"] == "conflict":
+            QMessageBox.warning(self, "Sync conflict", result["message"])
+            self._update_status()
+        else:
+            QMessageBox.critical(self, "Sync failed", result["message"])
+            self._update_status()
+
+    def _confirm_sync_target_matches_context(self, repo_path: str) -> bool:
+        """Sanity check before syncing: warn if the linked sync folder has no
+        relationship to what's currently open/browsed. Sync always acts on
+        the linked folder regardless of what's on screen — easy to mix up
+        if you've got multiple folders/files in play, and a wrong-folder
+        sync silently commits/pushes whatever stale content sits there."""
+        repo_abs = os.path.abspath(repo_path)
+
+        browsed_abs = (os.path.abspath(self.file_explorer._root_path)
+                       if self.file_explorer._root_path else None)
+        open_dir_abs = (os.path.abspath(os.path.dirname(self._file_path))
+                        if self._file_path else None)
+
+        if browsed_abs == repo_abs or open_dir_abs == repo_abs:
+            return True
+        if browsed_abs is None and open_dir_abs is None:
+            return True  # nothing open/browsed to compare against — don't block
+
+        context_bits = []
+        if browsed_abs:
+            context_bits.append(f"the folder you're browsing ({browsed_abs})")
+        if open_dir_abs:
+            context_bits.append(f"the folder of your open file ({open_dir_abs})")
+        context_desc = " or ".join(context_bits)
+
+        r = QMessageBox.question(
+            self, "Sync target mismatch",
+            f"Heads up: the linked sync folder is:\n{repo_abs}\n\n"
+            f"...which isn't {context_desc}.\n\n"
+            "Sync will act on the linked folder regardless of what's open or "
+            "browsed right now. Continue?",
+            QMessageBox.Yes | QMessageBox.Cancel)
+        return r == QMessageBox.Yes
 
     def _toggle_explorer(self):
         self.file_explorer.toggle_collapsed()
@@ -560,6 +647,65 @@ class MainWindow(QMainWindow):
                 return
         self._load_path(path)
 
+    def _confirm_unsaved_for_path(self, path: str) -> bool:
+        """Called by FileExplorer before a rename/delete that targets `path`
+        (a file or a folder). Returns True if it's safe to proceed.
+
+        Covers both: `path` IS the currently-open file, and `path` is a
+        folder that CONTAINS the currently-open file (deleting/renaming an
+        ancestor folder is just as disruptive as touching the file itself).
+        """
+        if not self._file_path:
+            return True
+        open_abs = os.path.abspath(self._file_path)
+        target_abs = os.path.abspath(path)
+        affects_open_file = (
+            open_abs == target_abs
+            or open_abs.startswith(target_abs + os.sep)
+        )
+        if not affects_open_file:
+            return True
+        if not self._dirty:
+            return True  # open, but no unsaved changes — safe either way
+
+        r = QMessageBox.question(
+            self, "Unsaved changes",
+            f"'{os.path.basename(self._file_path)}' is currently open with unsaved "
+            "changes.\n\nContinuing will rename/remove it on disk, but your unsaved "
+            "edits stay in the editor until you Save — to a new location, since the "
+            "old one will be gone.\n\nContinue anyway?",
+            QMessageBox.Yes | QMessageBox.Cancel)
+        return r == QMessageBox.Yes
+
+    def _on_explorer_file_renamed(self, old_path: str, new_path: str):
+        if not self._file_path:
+            return
+        old_abs, new_abs = os.path.abspath(old_path), os.path.abspath(new_path)
+        open_abs = os.path.abspath(self._file_path)
+        if open_abs == old_abs:
+            self._file_path = new_path
+            self._update_status()
+        elif open_abs.startswith(old_abs + os.sep):
+            # The open file lived inside a renamed *folder* — re-point
+            # _file_path to the same relative location under the new name.
+            rel = os.path.relpath(open_abs, old_abs)
+            self._file_path = os.path.join(new_abs, rel)
+            self._update_status()
+
+    def _on_explorer_file_deleted(self, path: str):
+        if not self._file_path:
+            return
+        deleted_abs = os.path.abspath(path)
+        open_abs = os.path.abspath(self._file_path)
+        if open_abs == deleted_abs or open_abs.startswith(deleted_abs + os.sep):
+            self._file_path = None
+            self._update_status()
+            QMessageBox.information(
+                self, "File removed",
+                "The file you had open was just removed from disk via the "
+                "explorer.\n\nYour current canvas content is unaffected, but "
+                "Save will now ask you for a new location.")
+
     def _load_path(self, path: str):
         try:
             if path.endswith(".bweave"):
@@ -576,6 +722,7 @@ class MainWindow(QMainWindow):
         self._dirty     = False
         self._fit_view()
         self._update_status()
+        self.sidebar.clear_pin_memory()
         self.sidebar.show_empty()
         self._refresh_all_styles()
 
@@ -754,16 +901,23 @@ class MainWindow(QMainWindow):
         self.scene.clear_all()
         self._file_path = None
         self._dirty     = False
+        self.sidebar.clear_pin_memory()
         self.sidebar.show_empty()
         self._update_status()
 
     def _clear_all(self):
-        r = QMessageBox.question(self, "Clear graph",
-                                 "Remove all nodes and edges?",
-                                 QMessageBox.Yes | QMessageBox.Cancel)
+        if not (self.scene.nodes or self.scene.edges or self.scene.texts or self.scene.groups):
+            return
+
+        r = QMessageBox.question(
+            self, "Clear graph",
+            "Remove all nodes and edges?",
+            QMessageBox.Yes | QMessageBox.Cancel
+        )
         if r == QMessageBox.Yes:
             self.scene.clear_all()
             self._dirty = True
+            self.sidebar.clear_pin_memory()
             self.sidebar.show_empty()
             self._update_status()
 
@@ -841,6 +995,8 @@ if __name__ == "__main__":
     config.load_defaults()
 
     app = QApplication(sys.argv)
+      
+    # app.setStyleSheet(build_app_stylesheet())
     app.setApplicationName("GraphCanvas")
     app.setFont(QFont("Segoe UI", config.SETTINGS["app_ui_font_size"]))
 

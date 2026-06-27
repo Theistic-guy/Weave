@@ -7,15 +7,18 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QColorDialog, QSpinBox, QGroupBox, QListWidget, QListWidgetItem,
     QMessageBox, QTabWidget, QInputDialog, QSizePolicy, QTextEdit, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout,QToolButton
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,QStyle, QFileDialog,QGridLayout,QToolButton,
+    QMenu, QAction
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPixmap, QIcon,QPalette
-from PyQt5.QtCore import Qt, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QFileSystemWatcher, QTimer
 
 import config
 from config import gc, qc
-
+import gitsync
+from utils import pick_color,is_dark_theme
+from colorpalette import ColorPaletteDialog
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Shared style helpers
@@ -479,9 +482,13 @@ class Sidebar(QWidget):
         col_lbl.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
         def _pick_col():
-            c = QColorDialog.getColor(QColor(group.color), self)
-            if c.isValid():
-                group.color = c.name()
+            col = pick_color(
+                self,
+                group.color
+            )
+
+            if col:
+                group.color = col
                 sw.setStyleSheet(_swatch_ss(group.color))
                 group.update()
                 self.scene.graph_changed.emit()
@@ -557,9 +564,13 @@ class Sidebar(QWidget):
         col_lbl.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
         def _pick_col():
-            c = QColorDialog.getColor(QColor(node.color), self)
-            if c.isValid():
-                node.color = c.name()
+            col = pick_color(
+                self,
+                node.color
+            )
+
+            if col:
+                node.color = col
                 sw.setStyleSheet(_swatch_ss(node.color))
                 node._refresh_text()
                 self.scene.update()
@@ -721,9 +732,13 @@ class Sidebar(QWidget):
         col_lbl.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; background:transparent; font-size:{sf-1}px;")
         def _pick_col():
-            c = QColorDialog.getColor(QColor(edge.color), self)
-            if c.isValid():
-                edge.color = c.name()
+            col = pick_color(
+                self,
+                edge.color
+            )
+
+            if col:
+                edge.color = col
                 sw.setStyleSheet(_swatch_ss(edge.color))
                 edge._refresh_label_text()
                 self.scene.update()
@@ -784,28 +799,47 @@ class Sidebar(QWidget):
             self._expanded_width = max(self.width(), 240)
         super().resizeEvent(event)
 
+    def clear_pin_memory(self):
+        """Drop any remembered last-inspected item.
+
+        Must be called whenever the scene's items are wholesale replaced or
+        cleared (new file load, Clear Graph) — otherwise a pinned inspector
+        keeps a reference to a now-deleted QGraphicsItem, and the next
+        deselect crashes with 'wrapped C/C++ object has been deleted'.
+        """
+        self._last_item = None
+        self._last_kind = None
+
     def restore_last_inspected(self):
         if self._last_item is None:
             self.show_empty()
             return
 
-        if self._last_kind == "node":
-            if self._last_item.node_id in self.scene.nodes:
-                self.show_node(self._last_item)
-            else:
-                self.show_empty()
+        try:
+            if self._last_kind == "node":
+                if self._last_item.node_id in self.scene.nodes:
+                    self.show_node(self._last_item)
+                else:
+                    self.show_empty()
 
-        elif self._last_kind == "edge":
-            if self._last_item.edge_id in self.scene.edges:
-                self.show_edge(self._last_item)
-            else:
-                self.show_empty()
+            elif self._last_kind == "edge":
+                if self._last_item.edge_id in self.scene.edges:
+                    self.show_edge(self._last_item)
+                else:
+                    self.show_empty()
 
-        elif self._last_kind == "group":
-            if self._last_item.group_id in self.scene.groups:
-                self.show_group(self._last_item)
-            else:
-                self.show_empty()
+            elif self._last_kind == "group":
+                if self._last_item.group_id in self.scene.groups:
+                    self.show_group(self._last_item)
+                else:
+                    self.show_empty()
+        except RuntimeError:
+            # The underlying C++ item was deleted out from under us (e.g. a
+            # file load/Clear Graph happened without clear_pin_memory() being
+            # called from somewhere it should have been). Fail safe instead
+            # of crashing.
+            self.clear_pin_memory()
+            self.show_empty()
 
 
 
@@ -829,7 +863,7 @@ class SearchBar(QWidget):
 
         self.icon = QLabel("🔍"); lay.addWidget(self.icon)
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("Search nodes… (Ctrl+F)")
+        self.edit.setPlaceholderText("Search… (Ctrl+F)")
         self.edit.textChanged.connect(self._search)
         self.edit.installEventFilter(self)
         lay.addWidget(self.edit)
@@ -874,44 +908,81 @@ class SearchBar(QWidget):
 
     def _search(self, text):
         text = text.strip().lower()
-        self._matches = []; self._match_idx = 0
-        for node in self.scene.nodes.values():
-            node.setSelected(False)
-        if text:
-            for node in self.scene.nodes.values():
-                match = text in node.label.lower()
-                if (
-                    not match
-                    and config.SETTINGS["search_properties"]
-                ):
-                    match = any(
-                        text in str(k).lower()
-                        or text in str(v).lower()
-                        for k, v in node.properties.items()
-                    )
+        self._matches = []
+        self._match_idx = 0
 
-                if (
-                    not match
-                    and config.SETTINGS["search_notes"]
-                ):
-                    match = text in (node.notes or "").lower()
+        self.scene.clearSelection()
 
-                if (
-                    not match
-                    and config.SETTINGS["search_sticky_text"]
-                ):
-                    match = text in (node.sticky_text or "").lower()
-
-                if match:
-                    self._matches.append(node)
-                    node.setSelected(True)
-
-            if self._matches:
-                self._centre_on(0)
-            else:
-                self.result_lbl.setText("No matches")
-        else:
+        if not text:
             self.result_lbl.setText("")
+            return
+
+        # ----------------------------
+        # Nodes
+        # ----------------------------
+        for node in self.scene.nodes.values():
+            match = text in node.label.lower()
+
+            if (
+                not match
+                and config.SETTINGS["search_properties"]
+            ):
+                match = any(
+                    text in str(k).lower()
+                    or text in str(v).lower()
+                    for k, v in node.properties.items()
+                )
+
+            if (
+                not match
+                and config.SETTINGS["search_notes"]
+            ):
+                match = text in (node.notes or "").lower()
+
+            if (
+                not match
+                and config.SETTINGS["search_sticky_text"]
+            ):
+                match = text in (node.sticky_text or "").lower()
+
+            if match:
+                self._matches.append(node)
+                node.setSelected(True)
+
+        # ----------------------------
+        # Edge Labels
+        # ----------------------------
+        if config.SETTINGS["search_edge_labels"]:
+            for edge in self.scene.edges.values():
+                if text in (edge.label or "").lower():
+                    self._matches.append(edge)
+                    edge.setSelected(True)
+
+        # ----------------------------
+        # Group Names
+        # ----------------------------
+        if config.SETTINGS["search_group_names"]:
+            for group in self.scene.groups.values():
+                if text in (group.name or "").lower():
+                    self._matches.append(group)
+                    group.setSelected(True)
+
+        # ----------------------------
+        # Canvas Text Items
+        # ----------------------------
+        if config.SETTINGS["search_canvas_text"]:
+            for txt in self.scene.texts.values():
+                if text in (txt.text or "").lower():
+                    self._matches.append(txt)
+                    txt.setSelected(True)
+
+        # ----------------------------
+        # Results
+        # ----------------------------
+        if self._matches:
+            self._centre_on(0)
+        else:
+            self.result_lbl.setText("No matches")
 
     def _centre_on(self, idx):
         if not self._matches: return
@@ -950,6 +1021,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_general_tab(),  "⚙  General")
         self.tabs.addTab(self._build_types_tab(),    "⬡  Node & Edge Types")
         self.tabs.addTab(self._build_props_tab(),    "⊞  Property Schema")
+        self.tabs.addTab(self._build_sync_tab(),     "🔄  Sync")
         main_lay.addWidget(self.tabs)
 
         # Button row
@@ -1011,7 +1083,7 @@ class SettingsDialog(QDialog):
         w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(12)
 
         grp_font = QGroupBox("Eye Comfort / Fonts")
-        gfl = QFormLayout(grp_font)
+        gfl = QGridLayout(grp_font)
         self.ui_font_spin = QSpinBox(); self.ui_font_spin.setRange(7, 24)
         self.ui_font_spin.setValue(self.temp_settings["ui_font_size"])
         self.app_ui_spin = QSpinBox()
@@ -1019,10 +1091,24 @@ class SettingsDialog(QDialog):
         self.app_ui_spin.setValue(
             config.SETTINGS["app_ui_font_size"]
         )
+        self.edge_label_size_spin = QSpinBox()
+        self.edge_label_size_spin.setRange(8, 24)
+        self.edge_label_size_spin.setValue(
+            config.SETTINGS["edge_label_size"]
+        )
         
-        gfl.addRow("Canvas Text size:", self.ui_font_spin)
 
-        gfl.addRow("App UI Size", self.app_ui_spin)
+        gfl.setHorizontalSpacing(20)
+        gfl.setVerticalSpacing(8)
+
+        gfl.addWidget(QLabel("Canvas Base Size"), 0, 0)
+        gfl.addWidget(self.ui_font_spin,          0, 1)
+
+        gfl.addWidget(QLabel("App UI Size"),      0, 2)
+        gfl.addWidget(self.app_ui_spin,           0, 3)
+
+        gfl.addWidget(QLabel("Edge Label Size"),  1, 0)
+        gfl.addWidget(self.edge_label_size_spin,  1, 1)
        
         lay.addWidget(grp_font)
 
@@ -1062,12 +1148,20 @@ class SettingsDialog(QDialog):
         self.hide_edge_labels_chk.setChecked(config.SETTINGS["hide_edge_labels"])
         self.hide_node_bodies_chk.setChecked(config.SETTINGS["hide_node_bodies"])
         pref_form.addRow("Ask edge label before adding new edge:", self.ask_edge_label_chk)
+        pref_form.addRow("Hide Node Labels", self.hide_node_labels_chk)
+        pref_form.addRow("Hide Edge Labels:", self.hide_edge_labels_chk)
+        pref_form.addRow("Hide Node Bodies:", self.hide_node_bodies_chk)
 
         grp_search_in = QGroupBox("Search In")
-        gdl_search_in = QFormLayout(grp_search_in)
+        gdl_search_in = QGridLayout(grp_search_in)
         self.search_properties_chk = QCheckBox("Search properties")
         self.search_notes_chk      = QCheckBox("Search notes")
         self.search_sticky_chk     = QCheckBox("Search sticky text")
+        self.search_edge_labels_chk = QCheckBox("Search edge labels")
+        self.search_group_names_chk = QCheckBox("Search group names")
+        self.search_canvas_text_chk = QCheckBox("Search canvas text items")
+        
+
         self.search_properties_chk.setChecked(
             config.SETTINGS["search_properties"]
         )
@@ -1079,9 +1173,25 @@ class SettingsDialog(QDialog):
         self.search_sticky_chk.setChecked(
             config.SETTINGS["search_sticky_text"]
         )
-        gdl_search_in.addRow(self.search_properties_chk)
-        gdl_search_in.addRow(self.search_notes_chk)
-        gdl_search_in.addRow(self.search_sticky_chk)
+        self.search_edge_labels_chk.setChecked(
+            config.SETTINGS["search_edge_labels"]
+        )
+        self.search_group_names_chk.setChecked(
+            config.SETTINGS["search_group_names"]
+        )
+        self.search_canvas_text_chk.setChecked(
+            config.SETTINGS["search_canvas_text"]
+        )
+        gdl_search_in.addWidget(self.search_properties_chk, 0, 0)
+        gdl_search_in.addWidget(self.search_edge_labels_chk, 0, 1)
+
+        gdl_search_in.addWidget(self.search_notes_chk, 1, 0)
+        gdl_search_in.addWidget(self.search_group_names_chk, 1, 1)
+
+        gdl_search_in.addWidget(self.search_sticky_chk, 2, 0)
+        gdl_search_in.addWidget(self.search_canvas_text_chk, 2, 1)
+        gdl_search_in.setHorizontalSpacing(20)
+        gdl_search_in.setVerticalSpacing(6)
         vbox_pref.addLayout(pref_form)
         vbox_pref.addWidget(grp_search_in)
 
@@ -1188,10 +1298,14 @@ class SettingsDialog(QDialog):
             return
         if name in self.temp_colors:
             QMessageBox.warning(self, "Duplicate", f"Node type '{name}' already exists."); return
-        col = QColorDialog.getColor(QColor("#888888"), self, "Pick colour for this type")
-        if col.isValid():
-            self.temp_colors[name] = col.name()
-            self._add_nt_item(name, col.name())
+        col = pick_color(
+            self,
+            "#888888"
+        )
+
+        if col:
+            self.temp_colors[name] = col
+            self._add_nt_item(name, col)
             self.def_node_type.addItem(name)
 
     def _rename_node_type(self):
@@ -1234,10 +1348,16 @@ class SettingsDialog(QDialog):
         item = self.nt_list.currentItem()
         if not item: return
         nt = item.data(Qt.UserRole)
-        c  = QColorDialog.getColor(QColor(self.temp_colors[nt]), self)
-        if c.isValid():
-            self.temp_colors[nt] = c.name()
-            pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
+        col = pick_color(
+            self,
+            self.temp_colors[nt]
+        )
+
+        if col:
+            self.temp_colors[nt] = col
+            pix = QPixmap(14, 14)
+            pix.fill(QColor(col))
+            item.setIcon(QIcon(pix))
 
     def _delete_node_type(self):
         item = self.nt_list.currentItem()
@@ -1265,10 +1385,14 @@ class SettingsDialog(QDialog):
             return
         if name in self.temp_edges:
             QMessageBox.warning(self, "Duplicate", f"Edge type '{name}' already exists."); return
-        col = QColorDialog.getColor(QColor("#adb5bd"), self, "Pick colour for this type")
-        if col.isValid():
-            self.temp_edges[name] = col.name()
-            self._add_et_item(name, col.name())
+        col = pick_color(
+            self,
+            "#adb5bd"
+        )
+
+        if col:
+            self.temp_edges[name] = col
+            self._add_et_item(name, col)
             self.def_edge_type.addItem(name)
 
     def _rename_edge_type(self):
@@ -1302,10 +1426,16 @@ class SettingsDialog(QDialog):
         item = self.et_list.currentItem()
         if not item: return
         et = item.data(Qt.UserRole)
-        c  = QColorDialog.getColor(QColor(self.temp_edges[et]), self)
-        if c.isValid():
-            self.temp_edges[et] = c.name()
-            pix = QPixmap(14, 14); pix.fill(c); item.setIcon(QIcon(pix))
+        col = pick_color(
+            self,
+            self.temp_edges[et]
+        )
+
+        if col:
+            self.temp_edges[et] = col
+            pix = QPixmap(14, 14)
+            pix.fill(QColor(col))
+            item.setIcon(QIcon(pix))
 
     def _delete_edge_type(self):
         item = self.et_list.currentItem()
@@ -1383,11 +1513,166 @@ class SettingsDialog(QDialog):
         self.temp_schema[target].remove(key)
         self.schema_list.takeItem(self.schema_list.row(item))
 
+    # ── Sync tab ──────────────────────────────────────────────────────────────
+    def _build_sync_tab(self):
+        w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(12)
+
+        grp = QGroupBox("Git Repo (single-user, two-machine sync)")
+        gl = QFormLayout(grp)
+
+        path_row = QHBoxLayout()
+        default_path = self.temp_settings.get("sync_repo_path", "") or self._default_sync_path()
+        self.sync_path_edit = QLineEdit(default_path)
+        self.sync_path_edit.setStyleSheet(_inp_ss())
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedHeight(28)
+        browse_btn.clicked.connect(self._browse_sync_path)
+        path_row.addWidget(self.sync_path_edit)
+        path_row.addWidget(browse_btn)
+        gl.addRow("Repo path:", path_row)
+
+        self.sync_url_edit = QLineEdit(self.temp_settings.get("sync_remote_url", ""))
+        self.sync_url_edit.setStyleSheet(_inp_ss())
+        self.sync_url_edit.setPlaceholderText("git@github.com:user/weave-data.git")
+        gl.addRow("Remote URL:", self.sync_url_edit)
+
+        lay.addWidget(grp)
+
+        link_row = QHBoxLayout()
+        self.link_btn = QPushButton("🔗 Initialize / Link")
+        self.link_btn.clicked.connect(self._do_link)
+        link_row.addWidget(self.link_btn)
+        link_row.addStretch()
+        lay.addLayout(link_row)
+
+        info = QLabel(
+            "Links the folder above to the given remote for two-machine sync of the\n"
+            ".weave file only (.bweave exports stay untouched, separate from this).\n\n"
+            "Git must already be installed & configured (SSH keys etc.) on this machine —\n"
+            "this feature just shells out to the git CLI and trusts your existing setup;\n"
+            "it doesn't manage credentials or tokens itself.\n\n"
+            "Once linked, use the 🔄 Sync button (Ctrl+Alt+S) in the main toolbar for\n"
+            "day-to-day syncing — no need to come back to this tab."
+        )
+        info.setStyleSheet(f"color:{gc('TEXT_MUTED')}; font-size:11px;")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        lay.addStretch()
+        return w
+
+    def _default_sync_path(self):
+        """Default repo path = folder containing the currently-open .weave file."""
+        fp = getattr(self.parent(), "_file_path", None)
+        if fp:
+            return os.path.dirname(os.path.abspath(fp))
+        return ""
+
+    def _browse_sync_path(self):
+        start = self.sync_path_edit.text().strip() or os.path.expanduser("~")
+        d = QFileDialog.getExistingDirectory(self, "Select Sync Folder", start)
+        if d:
+            self.sync_path_edit.setText(d)
+
+    def _save_sync_settings(self):
+        self.temp_settings["sync_repo_path"]  = self.sync_path_edit.text().strip()
+        self.temp_settings["sync_remote_url"] = self.sync_url_edit.text().strip()
+
+    def _do_link(self):
+        repo_path  = self.sync_path_edit.text().strip()
+        remote_url = self.sync_url_edit.text().strip()
+        if not repo_path or not remote_url:
+            QMessageBox.warning(self, "Missing info",
+                "Both a repo path and a remote URL are needed to link.")
+            return
+
+        self.link_btn.setEnabled(False)
+        self.link_btn.setText("Linking…")
+        QApplication.processEvents()
+        try:
+            case, info = gitsync.detect_link_case(repo_path, remote_url)
+
+            if case == "error":
+                QMessageBox.critical(self, "Link failed", info)
+                return
+
+            if case == "already_linked":
+                QMessageBox.information(self, "Already linked",
+                    "This folder is already linked to that remote. Nothing to do.")
+                self._save_sync_settings()
+                return
+
+            if case == "conflict_ambiguous":
+                QMessageBox.critical(self, "Cannot link",
+                    "This folder already contains files but isn't a git repo, and the\n"
+                    "remote already has commits — linking these would create conflicting\n"
+                    "histories.\n\n"
+                    "Pick an empty folder instead (it'll be cloned from the remote), or\n"
+                    "resolve this manually (e.g. move the existing files aside) and try again.")
+                return
+
+            if case == "repoint":
+                resp = QMessageBox.question(
+                    self, "Change remote?",
+                    f"This folder is already a git repo pointing to:\n{info}\n\n"
+                    f"Re-point it to:\n{remote_url}\n\n"
+                    "This won't delete any commits — it just changes where future\n"
+                    "pulls/pushes go.",
+                    QMessageBox.Yes | QMessageBox.No)
+                if resp != QMessageBox.Yes:
+                    return
+                res = gitsync.do_repoint(repo_path, remote_url)
+                if not res.ok:
+                    QMessageBox.critical(self, "Link failed", res.stderr or "git remote set-url failed.")
+                    return
+                QMessageBox.information(self, "Linked", "Remote updated.")
+                self._save_sync_settings()
+                return
+
+            if case == "clone":
+                res = gitsync.do_clone(remote_url, repo_path)
+                if not res.ok:
+                    QMessageBox.critical(self, "Link failed", res.stderr or "git clone failed.")
+                    return
+                QMessageBox.information(self, "Linked", "Repo cloned successfully.")
+                self._save_sync_settings()
+                return
+
+            if case == "init_new":
+                res = gitsync.do_init_new(repo_path, remote_url)
+                if not res.ok:
+                    QMessageBox.critical(self, "Link failed", res.stderr or "git init failed.")
+                    return
+
+                weave_files = gitsync.find_weave_files(repo_path)
+                if weave_files:
+                    resp = QMessageBox.question(
+                        self, "Push initial files?",
+                        f"Found {len(weave_files)} .weave file(s) already in this folder.\n"
+                        "Commit and push them to the new remote now?",
+                        QMessageBox.Yes | QMessageBox.No)
+                    if resp == QMessageBox.Yes:
+                        push_res = gitsync.do_first_commit_push(repo_path, weave_files)
+                        if not push_res.ok:
+                            QMessageBox.critical(self, "Push failed",
+                                push_res.stderr or "Initial commit/push failed.")
+                            return
+                QMessageBox.information(self, "Linked", "Repo initialized and linked to remote.")
+                self._save_sync_settings()
+                return
+        finally:
+            self.link_btn.setEnabled(True)
+            self.link_btn.setText("🔗 Initialize / Link")
+
     # ── Apply helpers ─────────────────────────────────────────────────────────
     def _collect_settings(self):
+        self._save_sync_settings()
         self.temp_settings["ui_font_size"]      = self.ui_font_spin.value()
         self.temp_settings["app_ui_font_size"] = (
             self.app_ui_spin.value()
+        )
+        self.temp_settings["edge_label_size"] = (
+            self.edge_label_size_spin.value()
         )
         self.temp_settings["default_node_type"] = self.def_node_type.currentText()
         self.temp_settings["default_edge_type"] = self.def_edge_type.currentText()
@@ -1395,6 +1680,9 @@ class SettingsDialog(QDialog):
         self.temp_settings["ask_edge_label_before_add"] = (
             self.ask_edge_label_chk.isChecked()
         )
+        self.temp_settings["hide_node_labels"] = self.hide_node_labels_chk.isChecked()
+        self.temp_settings["hide_edge_labels"] = self.hide_edge_labels_chk.isChecked()
+        self.temp_settings["hide_node_bodies"] = self.hide_node_bodies_chk.isChecked()
         self.temp_settings["search_properties"] = (
             self.search_properties_chk.isChecked()
         )
@@ -1406,6 +1694,9 @@ class SettingsDialog(QDialog):
         self.temp_settings["search_sticky_text"] = (
             self.search_sticky_chk.isChecked()
         )
+        self.temp_settings["search_edge_labels"] = self.search_edge_labels_chk.isChecked()
+        self.temp_settings["search_group_names"] = self.search_group_names_chk.isChecked()
+        self.temp_settings["search_canvas_text"] = self.search_canvas_text_chk.isChecked()
         # Guard against stale defaults
         if self.temp_settings["default_node_type"] not in self.temp_colors:
             self.temp_settings["default_node_type"] = next(iter(self.temp_colors), "default")
@@ -1512,9 +1803,22 @@ class FileExplorer(QWidget):
 
     Signals
     -------
-    open_file(str)   — emitted when the user double-clicks / activates a file
+    open_file(str)        — emitted when the user double-clicks / activates a file,
+                             or right after a successful New File creation.
+    file_renamed(str,str) — emitted (old_path, new_path) after a successful rename.
+    file_deleted(str)     — emitted (path) after a successful delete (file or folder).
+
+    Callback hook
+    -------------
+    confirm_unsaved_for: Optional[Callable[[str], bool]]
+        Set by MainWindow after construction. Called before any rename/delete
+        that could affect the currently-open file; must return True for the
+        operation to proceed. FileExplorer has no notion of "open" or "dirty"
+        itself — that judgment always belongs to whoever owns the canvas.
     """
-    open_file = pyqtSignal(str)
+    open_file     = pyqtSignal(str)
+    file_renamed  = pyqtSignal(str, str)
+    file_deleted  = pyqtSignal(str)
 
     _EXPANDED_W  = 240
     _COLLAPSED_W = 32
@@ -1524,6 +1828,26 @@ class FileExplorer(QWidget):
         self._collapsed  = False
         self._root_path  = None   # folder path (or None when single-file mode)
         self._file_path  = None   # single file path
+        self.confirm_unsaved_for = None   # set externally by MainWindow
+
+        # Folders explicitly created via "New Folder" this session, so they
+        # stay visible even while empty (the normal rule hides empty folders
+        # to cut clutter from unrelated directories).
+        self._force_show_dirs = set()
+
+        # ── Live filesystem watch state ─────────────────────────────────────
+        # _path_to_item: normalized path -> QTreeWidgetItem currently showing it.
+        # Rebuilt from scratch on every load_folder()/load_single_file() call —
+        # never carried over from a previous folder/file.
+        self._path_to_item = {}
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_dir_changed)
+        self._watcher.fileChanged.connect(self._on_file_changed)
+        self._pending_refresh_dirs = set()
+        self._pending_single_file_check = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._process_pending_refreshes)
 
         self.setFixedWidth(self._EXPANDED_W)
         self.setMinimumWidth(self._COLLAPSED_W)
@@ -1544,6 +1868,7 @@ class FileExplorer(QWidget):
             f"color:{gc('TEXT_PRIMARY')}; font-weight:bold; font-size:13px;"
             f" background:transparent; border:none;")
         h_lay.addWidget(self._title, 1)
+        
 
         self._toggle_btn = QPushButton("‹")
         self._toggle_btn.setFixedSize(28, 28)
@@ -1569,6 +1894,8 @@ class FileExplorer(QWidget):
         self._tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self._tree.itemActivated.connect(self._on_item_activated)
         self._tree.setStyleSheet(self._tree_style())
+        self._tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._show_context_menu)
 
 
         self._init_icons()
@@ -1598,6 +1925,7 @@ class FileExplorer(QWidget):
     # ── Public API ────────────────────────────────────────────────────────────
     def load_single_file(self, path: str):
         """Show exactly one file entry (Open File mode)."""
+        self._teardown_watch_state()
         self._root_path = None
         self._file_path = path
         self._tree.clear()
@@ -1610,8 +1938,18 @@ class FileExplorer(QWidget):
         self._hint.hide()
         self._tree.show()
 
+        self._path_to_item[self._norm(path)] = item
+        # Watch the *parent* folder so a delete/rename/replace of this one
+        # file (e.g. from outside the app, or a git pull) is still noticed —
+        # QFileSystemWatcher can't watch a path that doesn't exist, and a
+        # single file offers no useful directoryChanged signal of its own.
+        parent_dir = os.path.dirname(os.path.abspath(path))
+        if parent_dir and os.path.isdir(parent_dir):
+            self._watcher.addPath(parent_dir)
+
     def load_folder(self, folder: str):
         """Show the folder tree (Open Folder mode), only supported files/dirs."""
+        self._teardown_watch_state()
         self._root_path = folder
         self._file_path = None
         self._tree.clear()
@@ -1622,6 +1960,8 @@ class FileExplorer(QWidget):
         self._store_item_name(root_item, os.path.basename(folder) or folder)
         self._apply_item_visuals(root_item, True)
         self._set_folder_label(root_item, True)
+        self._path_to_item[self._norm(folder)] = root_item
+        self._watch_dir(folder)
         self._populate(root_item, folder)
         self._tree.addTopLevelItem(root_item)
         root_item.setExpanded(True)
@@ -1635,7 +1975,16 @@ class FileExplorer(QWidget):
         self._hint.setStyleSheet(
             f"color:{gc('TEXT_MUTED')}; font-size:11px;"
             f" padding:20px 12px; background:transparent;")
-        self.setStyleSheet(f"background:{gc('BG_PANEL')};")
+        self.setStyleSheet(f"""
+            QInputDialog {{ background: {gc('BG_PANEL')}; color: {gc('TEXT_PRIMARY')}; }}
+            QPushButton {{ background: {gc('BG_CARD')}; color: {gc('TEXT_PRIMARY')}; }}
+            QLabel {{ color: {gc('TEXT_PRIMARY')}; background: transparent; }}
+            QLineEdit {{ background:{gc('BG_CARD')}; color:{gc('TEXT_PRIMARY')} }}
+        """)
+
+
+
+        
 
     def toggle_collapsed(self):
         self.set_collapsed(not self._collapsed)
@@ -1691,9 +2040,10 @@ class FileExplorer(QWidget):
                 self._store_item_name(child, entry.name)
                 self._apply_item_visuals(child, True)
                 self._set_folder_label(child, False)
-                
 
-                if self._dir_has_content(entry.path):
+                if self._dir_has_content(entry.path) or self._norm(entry.path) in self._force_show_dirs:
+                    self._path_to_item[self._norm(entry.path)] = child
+                    self._watch_dir(entry.path)
                     self._populate(child, entry.path)
                     parent_item.addChild(child)
 
@@ -1704,6 +2054,7 @@ class FileExplorer(QWidget):
                     child.setData(0, Qt.UserRole, entry.path)
                     child.setToolTip(0, entry.path)
                     self._apply_item_visuals(child, False)
+                    self._path_to_item[self._norm(entry.path)] = child
                     parent_item.addChild(child)
 
     def _dir_has_content(self, folder: str) -> bool:
@@ -1722,6 +2073,147 @@ class FileExplorer(QWidget):
             pass
         return False
 
+    # ── Filesystem watch / live refresh ─────────────────────────────────────────
+    # Design: QFileSystemWatcher only ever drives *what the tree displays*. It
+    # never touches canvas/editor state — content the user is editing is never
+    # reloaded out from under them just because a file changed on disk.
+    @staticmethod
+    def _norm(path: str) -> str:
+        return os.path.normpath(os.path.abspath(path))
+
+    def _watch_dir(self, path: str):
+        """Add a directory to the watcher, ignoring duplicates/missing paths."""
+        if path and os.path.isdir(path) and path not in self._watcher.directories():
+            self._watcher.addPath(path)
+
+    def _teardown_watch_state(self):
+        """Fully reset watch state. Called at the start of every
+        load_folder()/load_single_file() — never carry watched paths,
+        pending refreshes, or the path->item map over from a previous
+        folder/file."""
+        dirs = self._watcher.directories()
+        if dirs:
+            self._watcher.removePaths(dirs)
+        files = self._watcher.files()
+        if files:
+            self._watcher.removePaths(files)
+        self._path_to_item.clear()
+        self._pending_refresh_dirs.clear()
+        self._pending_single_file_check = False
+        self._force_show_dirs.clear()
+        self._refresh_timer.stop()
+
+    def _on_dir_changed(self, path: str):
+        if self._root_path is None:
+            # Single-file mode: the only thing we watch is the open file's
+            # parent folder, purely to notice if *that one file* disappears
+            # or gets replaced. Nothing else in that folder is shown.
+            self._pending_single_file_check = True
+        else:
+            self._pending_refresh_dirs.add(self._norm(path))
+        self._refresh_timer.start(250)  # debounce rapid bursts (e.g. a git pull)
+
+    def _on_file_changed(self, path: str):
+        # Currently informational only (content edits aren't reflected in the
+        # tree); deletion is handled via the parent directory's
+        # directoryChanged, which always fires alongside this.
+        pass
+
+    def _process_pending_refreshes(self):
+        if self._pending_single_file_check:
+            self._pending_single_file_check = False
+            self._refresh_single_file_presence()
+            return
+
+        dirs, self._pending_refresh_dirs = self._pending_refresh_dirs, set()
+        for d in dirs:
+            self._refresh_branch(d)
+
+    def _refresh_single_file_presence(self):
+        """Single-file mode: if the one tracked file vanished (deleted,
+        renamed, or replaced from outside the app), fall back to the empty
+        hint state rather than show a stale, dead tree entry."""
+        if not self._file_path or os.path.exists(self._file_path):
+            return
+        self._teardown_watch_state()
+        self._root_path = None
+        self._file_path = None
+        self._tree.clear()
+        self._hint.show()
+        self._tree.hide()
+
+    def _forget_subtree(self, item: QTreeWidgetItem):
+        """Remove `item` and all its descendants from _path_to_item before
+        the item itself is discarded, so the map never holds stale entries
+        pointing at deleted QTreeWidgetItems."""
+        path = item.data(0, Qt.UserRole)
+        if path:
+            self._path_to_item.pop(self._norm(path), None)
+        for i in range(item.childCount()):
+            self._forget_subtree(item.child(i))
+
+    def _capture_expanded(self, item: QTreeWidgetItem) -> set:
+        """Snapshot which descendant folder paths are currently expanded."""
+        expanded = set()
+        def walk(it):
+            p = it.data(0, Qt.UserRole)
+            if p and it.isExpanded():
+                expanded.add(self._norm(p))
+            for i in range(it.childCount()):
+                walk(it.child(i))
+        walk(item)
+        return expanded
+
+    def _restore_expanded(self, item: QTreeWidgetItem, expanded: set):
+        def walk(it):
+            p = it.data(0, Qt.UserRole)
+            if p and self._norm(p) in expanded:
+                it.setExpanded(True)
+                self._update_folder_icon(it)
+            for i in range(it.childCount()):
+                walk(it.child(i))
+        walk(item)
+
+    def _refresh_branch(self, dir_path: str):
+        """Rebuild the children of whichever tree item corresponds to
+        dir_path, preserving expand-state and keeping the watcher's set of
+        watched directories in sync with what's actually on disk."""
+        norm = self._norm(dir_path)
+        item = self._path_to_item.get(norm)
+        if item is None:
+            return  # stale/unknown path — folder no longer part of this tree
+
+        if not os.path.isdir(dir_path):
+            # The directory itself was removed/renamed; let the *parent's*
+            # own refresh (triggered by its own directoryChanged) drop this
+            # row. Just stop watching it ourselves to avoid a dangling watch.
+            if dir_path in self._watcher.directories():
+                self._watcher.removePath(dir_path)
+            return
+
+        expanded = self._capture_expanded(item)
+        was_root_expanded = item.isExpanded()
+
+        for i in reversed(range(item.childCount())):
+            child = item.takeChild(i)
+            self._forget_subtree(child)
+
+        self._populate(item, dir_path)
+        item.setExpanded(was_root_expanded)
+        self._restore_expanded(item, expanded)
+        self._update_folder_icon(item)
+        self._prune_orphaned_watches()
+
+    def _prune_orphaned_watches(self):
+        """Drop any watched directory that's no longer represented in the
+        tree — e.g. a folder that still exists on disk but lost its last
+        qualifying file and is therefore no longer shown. Without this,
+        such a directory would stay watched indefinitely for no purpose."""
+        tracked = set(self._path_to_item.keys())
+        for d in self._watcher.directories():
+            if self._norm(d) not in tracked:
+                self._watcher.removePath(d)
+
     def _on_item_activated(self, item: QTreeWidgetItem, _col: int):
         path = item.data(0, Qt.UserRole)
         if path and os.path.isfile(path):
@@ -1733,6 +2225,225 @@ class FileExplorer(QWidget):
                     "Only .json files exported by Weave are supported.")
                 return
             self.open_file.emit(path)
+
+    # ── Context menu / New File / New Folder / Rename / Delete ─────────────────
+    def _show_context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background:{gc('BG_PANEL')}; color:{gc('TEXT_PRIMARY')};"
+            f" border:1px solid {gc('BORDER')}; border-radius:6px; padding:4px; }}"
+            f" QMenu::item {{ padding:6px 20px; border-radius:4px; }}"
+            f" QMenu::item:selected {{ background:{gc('ACCENT')}; color:white; }}"
+            f" QMenu::separator {{ background:{gc('BORDER')}; height:1px; margin:4px 8px; }}"
+        )
+
+        if item is None:
+            # Right-click on empty space: only meaningful in folder mode,
+            # and only as "create something at the root".
+            if self._root_path is None:
+                return
+            target_dir = self._root_path
+            menu.addAction("📄  New File…", lambda: self._new_file(target_dir))
+            menu.addAction("📁  New Folder…", lambda: self._new_folder(target_dir))
+            menu.exec_(self._tree.viewport().mapToGlobal(pos))
+            return
+
+        path = item.data(0, Qt.UserRole)
+        if not path:
+            return
+        is_dir = os.path.isdir(path)
+        is_root = (self._root_path is not None and self._norm(path) == self._norm(self._root_path))
+
+        if is_dir:
+            menu.addAction("📄  New File…", lambda: self._new_file(path))
+            menu.addAction("📁  New Folder…", lambda: self._new_folder(path))
+            if not is_root:
+                menu.addSeparator()
+                menu.addAction("✏️  Rename…", lambda: self._rename_path(item, path))
+                menu.addAction("🗑️  Delete…", lambda: self._delete_path(item, path))
+        else:
+            menu.addAction("📂  Open", lambda: self._on_item_activated(item, 0))
+            menu.addSeparator()
+            menu.addAction("✏️  Rename…", lambda: self._rename_path(item, path))
+            menu.addAction("🗑️  Delete…", lambda: self._delete_path(item, path))
+
+        menu.addSeparator()
+        menu.addAction("🔎  Reveal in file manager", lambda: self._reveal_in_file_manager(path))
+        menu.addAction("📋  Copy path", lambda: QApplication.clipboard().setText(path))
+
+        menu.exec_(self._tree.viewport().mapToGlobal(pos))
+
+    def _validate_new_name(self, name: str, parent_dir: str) -> str:
+        """Returns a cleaned name, or '' (with a dialog shown) if invalid."""
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Invalid name", "Name can't be empty.")
+            return ""
+        if os.sep in name or (os.altsep and os.altsep in name) or name in (".", ".."):
+            QMessageBox.warning(self, "Invalid name",
+                                 "Name can't contain a path separator.")
+            return ""
+        if os.path.exists(os.path.join(parent_dir, name)):
+            QMessageBox.warning(self, "Already exists",
+                                 f"'{name}' already exists in this folder.")
+            return ""
+        return name
+
+    def _unique_name(self, parent_dir: str, base: str, ext: str) -> str:
+        """'Untitled.weave' -> 'Untitled (1).weave' -> ... if a collision exists."""
+        candidate = f"{base}{ext}"
+        n = 1
+        while os.path.exists(os.path.join(parent_dir, candidate)):
+            candidate = f"{base} ({n}){ext}"
+            n += 1
+        return candidate
+
+    def _new_file(self, parent_dir: str):
+        default_name = self._unique_name(parent_dir, "Untitled", ".weave")
+        name, ok = QInputDialog.getText(self, "New File", "File name:", text=default_name)
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if not os.path.splitext(name)[1]:
+            name += ".weave"
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in (".weave", ".json"):
+            QMessageBox.warning(self, "Unsupported type",
+                "New files can only be created as .weave or .json — "
+                "use File ▾ Export for .bweave.")
+            return
+        name = self._validate_new_name(name, parent_dir)
+        if not name:
+            return
+
+        path = os.path.join(parent_dir, name)
+        try:
+            empty_graph = {
+                "schema": config.schema_block(),
+                "nodes": [], "edges": [], "texts": [], "groups": [],
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(empty_graph, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Couldn't create file", str(e))
+            return
+
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+        self.open_file.emit(path)
+
+    def _new_folder(self, parent_dir: str):
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="New Folder")
+        if not ok:
+            return
+        name = self._validate_new_name(name, parent_dir)
+        if not name:
+            return
+
+        path = os.path.join(parent_dir, name)
+        try:
+            os.makedirs(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Couldn't create folder", str(e))
+            return
+
+        self._force_show_dirs.add(self._norm(path))
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+
+    def _rename_path(self, item: QTreeWidgetItem, path: str):
+        if self.confirm_unsaved_for and not self.confirm_unsaved_for(path):
+            return
+
+        old_name = os.path.basename(path)
+        parent_dir = os.path.dirname(path)
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=old_name)
+        if not ok or new_name.strip() == old_name:
+            return
+        new_name = self._validate_new_name(new_name, parent_dir)
+        if not new_name:
+            return
+
+        new_path = os.path.join(parent_dir, new_name)
+        try:
+            os.rename(path, new_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Rename failed", str(e))
+            return
+
+        if self._norm(path) in self._force_show_dirs:
+            self._force_show_dirs.discard(self._norm(path))
+            self._force_show_dirs.add(self._norm(new_path))
+
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+        elif self._file_path and self._norm(path) == self._norm(self._file_path):
+            self.load_single_file(new_path)
+
+        self.file_renamed.emit(path, new_path)
+
+    def _delete_path(self, item: QTreeWidgetItem, path: str):
+        if self.confirm_unsaved_for and not self.confirm_unsaved_for(path):
+            return
+
+        is_dir = os.path.isdir(path)
+        name = os.path.basename(path)
+        msg = (f"Delete the folder '{name}' and everything inside it?\nThis can't be undone."
+               if is_dir else
+               f"Delete '{name}'?\nThis can't be undone.")
+        r = QMessageBox.warning(self, "Delete", msg,
+                                 QMessageBox.Yes | QMessageBox.Cancel,
+                                 QMessageBox.Cancel)
+        if r != QMessageBox.Yes:
+            return
+
+        parent_dir = os.path.dirname(path)
+        try:
+            if is_dir:
+                import shutil
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Delete failed", str(e))
+            return
+
+        self._force_show_dirs.discard(self._norm(path))
+
+        if self._root_path:
+            self._refresh_branch(parent_dir if parent_dir != self._root_path else self._root_path)
+        elif self._file_path and self._norm(path) == self._norm(self._file_path):
+            self._teardown_watch_state()
+            self._root_path = None
+            self._file_path = None
+            self._tree.clear()
+            self._hint.show()
+            self._tree.hide()
+
+        self.file_deleted.emit(path)
+
+    def _reveal_in_file_manager(self, path: str):
+        import subprocess, sys
+        target = path if os.path.isdir(path) else os.path.dirname(path)
+        try:
+            if sys.platform.startswith("darwin"):
+                if os.path.isfile(path):
+                    subprocess.Popen(["open", "-R", path])
+                else:
+                    subprocess.Popen(["open", target])
+            elif sys.platform.startswith("win"):
+                if os.path.isfile(path):
+                    subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+                else:
+                    subprocess.Popen(["explorer", os.path.normpath(target)])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't open file manager", str(e))
 
     def _sync_visibility(self):
         collapsed = self._collapsed
