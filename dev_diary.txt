@@ -17,3 +17,33 @@
     - can we offload a task to async thread or somethign (but very dangerous if the main ui is still active as an operation might conflict)
 
     - a loader in the main ui can help while the async thread does the background stuff the main ui can keep showing a loading bar
+
+
+
+
+#Issues jotted down
+input dialog boxes font size does not increase or zoom effect is not there when app ui size is increased
+
+arrow keys based node navigation like up arrow jumping to the closes node in the upper direcrtion
+
+there is no way to press OK on the add canvas text multiline input dialog
+
+there is no way to group canvas text with nodes in a single group or also multi select either thru control modifiers or thru mouse based selection to move together a group and a canvas text. You can select all the nodes of a group and the canvas text and can then move together ⬜
+
+
+there is no tab order in group names
+
+
+there is no invisible group option to move items together as in exaclidraw
+
+
+after writing the value of a property and hitting enter should place focus on the next key field 
+
+when search text is entered it is accenting all the possible occurrences which maybe right but when we are pressing the next/prev arrwos on the search bar it is not highlight the one we are on . Also as we are typing in the search bar i think we can use the left/right arrow keys to jump back and next instead of having the user to clikc those buttons
+
+
+when the app runs in the taskbar if not pinned it shows a generic application icon not of the Weave
+
+
+
+
