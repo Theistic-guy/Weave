@@ -45,5 +45,44 @@ when search text is entered it is accenting all the possible occurrences which m
 when the app runs in the taskbar if not pinned it shows a generic application icon not of the Weave
 
 
+# more commits
+
+double click node insertion like excalidraw
+connection to canvas text items
+
+node circles are getting giant way too quickly
+
+after toggling node body sometimes i need to scroll a little or jitter a little for the UI to repaint the edges
+
+there should be a way to highlight or bookmark a node or some visual indication like that, maybe bold or italic or underline
+
+insertion of pngs or svgs or other graphics
+
+there should be an option of symbol or library pack
+
+
+i think of now centering the edge line if the node body is hidden
+
+a handy shortcut or single or multiple keyress or even combile a key or mouse click whatever to rotate the node lable position
+
+a newly added node can be put to focus ( we can also open the sidebar or not), the user can also ctrl + c and paste easily
+
+tabbing after sticky text box is not leading to notes section
+
+
+there should be an option to export as document with all the knowledge int he inspector sidebar as well and also addition to the current export as img the inspector sidebar rporptiers and values are not there
+
+
+
+when synicing, clicking on UI etc leads to not responding this should not happen in a good app
+
+there should be a very handy marks/symbols like ticks, crosses, circling, underlining, striking thru like that 
+
+#ISSUE
+saving the new graph in a file in the same folder as opened in the file explorer refreshed it and only showing the saved file to regain the complete folder i had to open it again
+
+---------------
+NOTE TO SELF : backwards compatibility needs to be ensured
+
 
 
