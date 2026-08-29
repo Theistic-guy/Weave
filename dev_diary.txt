@@ -85,4 +85,104 @@ saving the new graph in a file in the same folder as opened in the file explorer
 NOTE TO SELF : backwards compatibility needs to be ensured
 
 
+More problems:
+- if i chose weave.exe to be always the app to open the .weave file and then directly try to open the file there is only the default version loading i think do i have to set some cmd line args or something like that
+- save settigns and defaut both needs to be checked out
+- save as app default not working, it is file independent and it should work even if no changes has been made in the settings when the dialog is opened
+ - meaing if some changes were made and save settings were clicked and if opened again and clicked save default then it should work. Also whether a file is opened or not , save as default must work.
 
+
+
+somethind to add
+- option to import as excel or csv the node edge types and properties and colors and stuff
+- properties can be dropdown checked unchecked like that
+- some stars rating kind of stuff
+- add tagging
+- implenet live map viewing with knowledge points
+
+curving lines is also important 
+and maybe portal based linking
+
+i think having notion type of arrow toggles directly on the nodes is a fantastic idea
+
+
+shapes of diff sizes like circle rectange etc , maybe prebuilt templates of hierarchy etc. 
+
+
+if single copying a node then focus might should shift to the newly created one instead of users having to click the newly one
+
+color theme change was taking a little dealy - should not happen
+
+individual node sizing and the node body circles are looking big
+
+i think nodes can be connected with groups as well right
+
+an indicator to show that there is something in the notes section as there is for the non empty properties
+
+autosave feature
+
+text nodes can have  notes section in the inspector maybe
+
+i think edge types can be default labels 
+
+a complete segment or area folding/ unfolding
+
+change node type collectively and also hide node bodies flow and toggling needs a revisit (should or should not toggle all or leave the rest and also toggle right click option is needing double times to activate node body if hiding is selected
+
+
+
+i think the sticky text should be easily customizable and move around on it's own yet act like grouped
+
+inspector rigidly hiding feature i think i added but why is it not working, i think it should bel ike pin the inspector and then 
+manually hide it then it would not automatically open
+
+important 
+- when the node type is changed then the propertoes are simply appending , we can have like the non empty remains there but the empty ones gets removed and the new node types properties are appenededd in the inspector sdiegbaer
+
+
+backlinks to nodes (no direct conenctsion but mentions thru @ or something like that jumpable is a must)
+
+
+CROSS Linking is extremely importnat
+
+save settings should immediately be saved , regardless of file save
+
+
+footer notes (out of context from current work)
+
+IMPORTANT: if there were some umstaged or uncommited changes made by another file or something,it won't ley me sync any other file , make this robust or change this forever.
+Even Better: Exam-Oriented Metadata
+
+Instead of only factual properties, add fields that help revision.
+
+Property	Purpose
+Frequently Asked	⭐⭐⭐
+PYQ Mentioned	Yes/No
+Difficulty	Easy / Medium / Hard
+Mnemonic	User-created memory trick
+Revision Notes	Short notes
+Related Questions	Important facts
+Confused With	Similar concepts
+One-line Fact	1-line revision
+
+
+
+-------------------------------------------------
+
+
+
+Target : 5000 nodes
+ - Anchor areas or achor points (very handy thru key shortcuts to optimizingly jump to a specific part of canvas especially useful if many nodes) instead of panning which leads to lag
+ - Setting for optimization (curbs down smooth flow of nodes and other properties)
+ - multithreading or processing
+ - interfacing with rust for code modules
+
+
+if the same file is opened don't load it from the file explorer if user double clikcs
+
+fix 'not responding' at all costs
+
+
+deleting or clearing was taking a lot of time - I think we can optimize by clearing the canvas first and then deleting them in the background
+
+color palette should show the selected color 
