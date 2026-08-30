@@ -1,3 +1,5 @@
+<div align='center'><img src="./logo.ico" width=100></div>
+
 # 🕸️ Weave — Local-First Visual Knowledge Graph
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
