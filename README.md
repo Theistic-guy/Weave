@@ -9,6 +9,8 @@
 [![License](https://img.shields.io/badge/License-Source--Available%20%2F%20Non--Commercial-red.svg?style=for-the-badge)](LICENSE)
 
 > **Weave** is a fast, keyboard-friendly, local-first visual knowledge graph and concept mapping workspace. Designed for students, researchers, engineers, and visual thinkers who need structured concept modeling, revision mindmaps, and system architecture diagrams without cloud subscriptions or vendor lock-in.
+<div align='center'><img style="width:70%; height:auto;" alt="Graph img" src="https://github.com/user-attachments/assets/31747f95-45bf-423d-8105-85d90eb7910e" /></div>
+
 
 ---
 
@@ -26,6 +28,9 @@
 - **Dedicated Markdown-ready Notes**: Expand any node with deep contextual notes directly inside the floating inspector.
 - **Dockable Sticky Annotations**: Attach floating tag annotations to any node with 4 dock alignments (Top, Bottom, Left, Right).
 
+  <div align = 'center'><img style="width:70%; height:auto;" alt="property schema and color palette" src="https://github.com/user-attachments/assets/4de0a358-a748-4e69-9f93-8ffc850395b1" /></div>
+
+
 ### 🔗 Expressive Relationships & Edge Styles
 - **Directional Links**: Support for unidirectional (`→`, `←`), bidirectional (`↔`), and non-directional (`—`) edges.
 - **Stroke Styling**: Choose between `solid`, `dashed`, and `dotted` lines with custom stroke widths and interactive selection halos.
@@ -35,6 +40,9 @@
 - **Containment Groups**: Group related concept clusters with colored boundary envelopes.
 - **Interactive Resizing**: Drag corner/edge resize handles with automatic membership tracking.
 - **Canvas Text Callouts**: Place freeform multi-line text callouts anywhere on the canvas for section headers and annotations.
+
+  <div align='center'><img style="width:40%; height:auto;" alt="node groups and floating text" src="https://github.com/user-attachments/assets/14880281-d272-48c2-a657-6842a276017c" /></div>
+
 
 ### 🔍 Deep Global Search (`Ctrl + F`)
 - Search across node labels, contextual notes, custom key-value properties, edge labels, group titles, and canvas text.
@@ -51,6 +59,9 @@
 ### 💾 Dual File Storage Engine
 - **`.weave` (Standard JSON)**: Clean, transparent, version-control friendly JSON structure.
 - **`.bweave` (Compressed Binary)**: Fast binary format with `zlib` compression (level 9) for compact storage and instant loading of large graphs.
+
+<div align = 'center'><img style="width:45%; height=auto;" alt="property inspector" src="https://github.com/user-attachments/assets/6f780c45-f030-4c5b-9418-669c6ca14bc6" /></div>
+
 
 ### 🎨 Adaptive Light / Dark Theme Engine
 - Seamless theme switching (`T`) with contrast-aware color palette containing 31 curated tones.
